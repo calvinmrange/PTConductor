@@ -147,4 +147,3 @@ pub struct EvidenceReference {
     pub sha256: String,
     pub media_type: String,
 }
-

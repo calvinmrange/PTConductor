@@ -36,4 +36,3 @@ pub trait RunRepository: Send + Sync {
     async fn save(&self, run: &RunRecord) -> Result<(), EngineError>;
     async fn get(&self, id: Uuid) -> Result<Option<RunRecord>, EngineError>;
 }
-

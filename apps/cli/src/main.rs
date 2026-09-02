@@ -11,7 +11,11 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 #[derive(Debug, Parser)]
-#[command(name = "ptconductor", version, about = "Local-first pentest workflow orchestration")]
+#[command(
+    name = "ptconductor",
+    version,
+    about = "Local-first pentest workflow orchestration"
+)]
 struct Cli {
     #[arg(long, default_value = "workflows/examples", global = true)]
     workflows_dir: PathBuf,
@@ -117,8 +121,8 @@ fn parse_inputs(values: Vec<String>) -> Result<BTreeMap<String, Value>, String> 
             let (name, value) = entry
                 .split_once('=')
                 .ok_or_else(|| format!("invalid input `{entry}`; expected NAME=VALUE"))?;
-            let value = serde_json::from_str(value)
-                .unwrap_or_else(|_| Value::String(value.to_owned()));
+            let value =
+                serde_json::from_str(value).unwrap_or_else(|_| Value::String(value.to_owned()));
             Ok((name.to_owned(), value))
         })
         .collect()

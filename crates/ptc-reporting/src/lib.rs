@@ -31,14 +31,10 @@ impl ReportRenderer for MarkdownRenderer {
             for finding in &run.findings {
                 output.push_str(&format!(
                     "\n### {} ({:?})\n\n{}\n\n**Recommendation:** {}\n",
-                    finding.title,
-                    finding.severity,
-                    finding.description,
-                    finding.recommendation
+                    finding.title, finding.severity, finding.description, finding.recommendation
                 ));
             }
         }
         output
     }
 }
-

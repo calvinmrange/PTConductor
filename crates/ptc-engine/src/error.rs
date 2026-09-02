@@ -15,4 +15,3 @@ pub enum EngineError {
     #[error("repository error: {0}")]
     Repository(String),
 }
-

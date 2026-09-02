@@ -18,7 +18,10 @@ impl VariableResolver {
         definitions: &[InputDefinition],
         mut supplied: BTreeMap<String, Value>,
     ) -> Result<ResolvedInputs, EngineError> {
-        let known: BTreeSet<_> = definitions.iter().map(|input| input.name.as_str()).collect();
+        let known: BTreeSet<_> = definitions
+            .iter()
+            .map(|input| input.name.as_str())
+            .collect();
         if let Some(unknown) = supplied.keys().find(|name| !known.contains(name.as_str())) {
             return Err(EngineError::InvalidInput {
                 name: unknown.clone(),
@@ -96,10 +99,9 @@ impl ResolvedInputs {
 
 fn validate_type(definition: &InputDefinition, value: &Value) -> Result<(), EngineError> {
     let valid = match definition.kind {
-        InputKind::Text
-        | InputKind::Textarea
-        | InputKind::File
-        | InputKind::Secret => value.is_string(),
+        InputKind::Text | InputKind::Textarea | InputKind::File | InputKind::Secret => {
+            value.is_string()
+        }
         InputKind::Url => value
             .as_str()
             .is_some_and(|value| value.starts_with("http://") || value.starts_with("https://")),

@@ -26,4 +26,3 @@ impl AiProvider for MockProvider {
         })
     }
 }
-
