@@ -23,7 +23,7 @@ impl WorkflowRepository for FileWorkflowRepository {
             return Ok(Vec::new());
         }
 
-        let mut workflows = Vec::new();
+        let mut workflows: Vec<WorkflowDefinition> = Vec::new();
         for entry in fs::read_dir(&self.root).map_err(repository_error)? {
             let path = entry.map_err(repository_error)?.path();
             if path.extension().and_then(|value| value.to_str()) != Some("json") {
