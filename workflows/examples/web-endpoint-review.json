@@ -1,0 +1,31 @@
+{
+  "schemaVersion": "ptconductor.dev/workflow/v1alpha1",
+  "id": "web-endpoint-review",
+  "version": "0.1.0",
+  "name": "Web Endpoint Review",
+  "description": "Review an authorized web target using a configured AI provider.",
+  "inputs": [
+    {
+      "name": "TARGET",
+      "label": "Target URL",
+      "type": "url",
+      "required": true,
+      "description": "An explicitly authorized HTTP or HTTPS target."
+    },
+    {
+      "name": "NOTES",
+      "label": "Operator notes",
+      "type": "textarea",
+      "required": false
+    }
+  ],
+  "steps": [
+    {
+      "type": "ai_prompt",
+      "id": "review-target",
+      "name": "Review target context",
+      "prompt": "Review the following authorized web target: <TARGET>\n\nOperator notes: <NOTES>\n\nExplain useful, non-destructive validation steps and clearly separate observed facts from assumptions."
+    }
+  ]
+}
+

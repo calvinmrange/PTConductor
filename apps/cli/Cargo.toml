@@ -1,0 +1,23 @@
+[package]
+name = "ptconductor-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "ptconductor"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+ptc-domain = { path = "../../crates/ptc-domain" }
+ptc-engine = { path = "../../crates/ptc-engine" }
+ptc-persistence = { path = "../../crates/ptc-persistence" }
+ptc-providers = { path = "../../crates/ptc-providers" }
+ptc-reporting = { path = "../../crates/ptc-reporting" }
+serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+

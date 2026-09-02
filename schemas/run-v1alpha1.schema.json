@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ptconductor.dev/schemas/run/v1alpha1.json",
+  "title": "PTConductor run v1alpha1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "id", "workflow", "status", "startedAt", "inputs", "steps", "findings"],
+  "properties": {
+    "schemaVersion": { "const": "ptconductor.dev/run/v1alpha1" },
+    "id": { "type": "string", "format": "uuid" },
+    "workflow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "contentHash"],
+      "properties": {
+        "id": { "type": "string" },
+        "version": { "type": "string" },
+        "contentHash": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+      }
+    },
+    "status": { "$ref": "#/$defs/status" },
+    "startedAt": { "type": "string", "format": "date-time" },
+    "completedAt": { "type": ["string", "null"], "format": "date-time" },
+    "inputs": { "type": "object", "additionalProperties": true },
+    "steps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "status", "startedAt", "provider", "output"],
+        "properties": {
+          "id": { "type": "string" },
+          "status": { "$ref": "#/$defs/status" },
+          "startedAt": { "type": "string", "format": "date-time" },
+          "completedAt": { "type": ["string", "null"], "format": "date-time" },
+          "provider": { "type": "string" },
+          "output": { "type": "string" },
+          "error": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "findings": { "type": "array", "items": { "$ref": "#/$defs/finding" } }
+  },
+  "$defs": {
+    "status": { "enum": ["pending", "running", "completed", "failed", "cancelled"] },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "severity", "description", "evidence", "recommendation"],
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "severity": { "enum": ["informational", "low", "medium", "high", "critical"] },
+        "description": { "type": "string" },
+        "evidence": { "type": "array", "items": { "$ref": "#/$defs/evidence" } },
+        "recommendation": { "type": "string" }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "path", "sha256", "mediaType"],
+      "properties": {
+        "id": { "type": "string" },
+        "path": { "type": "string" },
+        "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "mediaType": { "type": "string" }
+      }
+    }
+  }
+}

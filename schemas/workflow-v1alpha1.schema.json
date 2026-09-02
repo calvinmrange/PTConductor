@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ptconductor.dev/schemas/workflow/v1alpha1.json",
+  "title": "PTConductor workflow v1alpha1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "id", "version", "name", "steps"],
+  "properties": {
+    "schemaVersion": { "const": "ptconductor.dev/workflow/v1alpha1" },
+    "id": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
+    "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+    "name": { "type": "string", "minLength": 1 },
+    "description": { "type": "string" },
+    "inputs": {
+      "type": "array",
+      "default": [],
+      "items": { "$ref": "#/$defs/input" }
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/step" }
+    }
+  },
+  "$defs": {
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "label", "type"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" },
+        "label": { "type": "string", "minLength": 1 },
+        "type": {
+          "enum": ["text", "textarea", "url", "number", "boolean", "file", "secret"]
+        },
+        "required": { "type": "boolean", "default": false },
+        "description": { "type": "string" },
+        "default": {}
+      }
+    },
+    "step": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "id", "name", "prompt"],
+          "properties": {
+            "type": { "const": "ai_prompt" },
+            "id": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
+            "name": { "type": "string", "minLength": 1 },
+            "prompt": { "type": "string", "minLength": 1 },
+            "provider": { "type": "string" }
+          }
+        }
+      ]
+    }
+  }
+}
+
