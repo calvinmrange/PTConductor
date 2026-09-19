@@ -29,17 +29,32 @@ The frontend never owns workflow state, executes tools, or reads secrets directl
 - `schemas` — versioned workflow and run JSON Schemas
 - `workflows/examples` — safe sample workflows
 
-## Initial commands
+## Workflow commands
 
 ```bash
 cargo run -p ptconductor-cli -- workflow list
 cargo run -p ptconductor-cli -- workflow validate workflows/examples/web-endpoint-review.json
+cargo run -p ptconductor-cli -- prepare workflows/examples/web-endpoint-review.json \
+  --input TARGET=https://example.test \
+  --input 'NOTES=Authorized staging target'
 cargo run -p ptconductor-cli -- run workflows/examples/web-endpoint-review.json \
   --input TARGET=https://example.test \
   --provider mock
 ```
 
-The scaffold currently includes a deterministic mock provider so the engine can be exercised without credentials. Ollama and OpenAI-compatible adapters are the next implementation milestone.
+Create a workflow from the CLI with typed fields:
+
+```bash
+cargo run -p ptconductor-cli -- workflow create \
+  --id tls-review \
+  --name "TLS review" \
+  --field 'TARGET:url:required:Target URL' \
+  --field 'DEPTH:number:optional:Review depth' \
+  --field 'TOKEN:secret:required:Temporary token' \
+  --prompt 'Review <TARGET> to depth <DEPTH> using <TOKEN>'
+```
+
+`prepare` validates inputs and prints a redacted prompt preview without calling a provider. The deterministic mock provider lets the full engine run without credentials. Ollama and OpenAI-compatible adapters are the next implementation milestone.
 
 ## Development
 
@@ -51,7 +66,10 @@ cargo test --workspace
 cd apps/desktop
 npm install
 npm run build
+npm run tauri dev
 ```
+
+For a fresh Kali Linux VM, follow [docs/kali-testing.md](docs/kali-testing.md).
 
 ## MVP boundary
 

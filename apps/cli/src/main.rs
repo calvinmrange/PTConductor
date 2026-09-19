@@ -1,13 +1,14 @@
-use std::{collections::BTreeMap, fs, path::PathBuf};
+use std::{collections::BTreeMap, path::PathBuf};
 
-use clap::{Parser, Subcommand};
-use ptc_domain::WorkflowDefinition;
-use ptc_engine::{validate_workflow, RunRepository, WorkflowEngine, WorkflowRepository};
-use ptc_persistence::{FileWorkflowRepository, JsonRunRepository};
+use clap::{Parser, Subcommand, ValueEnum};
+use ptc_domain::{
+    InputDefinition, InputKind, StepDefinition, WorkflowDefinition, WORKFLOW_SCHEMA_VERSION,
+};
+use ptc_engine::{prepare_workflow, RunRepository, WorkflowEngine};
+use ptc_persistence::{load_workflow_file, FileWorkflowRepository, JsonRunRepository};
 use ptc_providers::MockProvider;
 use ptc_reporting::{MarkdownRenderer, ReportRenderer};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 #[derive(Debug, Parser)]
@@ -38,6 +39,11 @@ enum Command {
         #[arg(long, default_value = "mock")]
         provider: String,
     },
+    Prepare {
+        workflow: PathBuf,
+        #[arg(long = "input", value_name = "NAME=VALUE")]
+        inputs: Vec<String>,
+    },
     Show {
         run_id: Uuid,
     },
@@ -52,6 +58,43 @@ enum Command {
 enum WorkflowCommand {
     List,
     Validate { path: PathBuf },
+    Create {
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        description: Option<String>,
+        #[arg(long)]
+        prompt: String,
+        #[arg(long = "field", value_name = "NAME:TYPE:REQUIRED:LABEL")]
+        fields: Vec<String>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum CliInputKind {
+    Text,
+    Textarea,
+    Url,
+    Number,
+    Boolean,
+    File,
+    Secret,
+}
+
+impl From<CliInputKind> for InputKind {
+    fn from(value: CliInputKind) -> Self {
+        match value {
+            CliInputKind::Text => Self::Text,
+            CliInputKind::Textarea => Self::Textarea,
+            CliInputKind::Url => Self::Url,
+            CliInputKind::Number => Self::Number,
+            CliInputKind::Boolean => Self::Boolean,
+            CliInputKind::File => Self::File,
+            CliInputKind::Secret => Self::Secret,
+        }
+    }
 }
 
 #[tokio::main]
@@ -61,14 +104,50 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Command::Workflow { command } => match command {
             WorkflowCommand::List => {
                 let repository = FileWorkflowRepository::new(cli.workflows_dir);
-                for workflow in repository.list().await? {
-                    println!("{}\t{}\t{}", workflow.id, workflow.version, workflow.name);
+                for loaded in repository.discover()? {
+                    println!(
+                        "{}\t{}\t{}\t{}",
+                        loaded.definition.id,
+                        loaded.definition.version,
+                        loaded.definition.name,
+                        loaded.path.display()
+                    );
                 }
             }
             WorkflowCommand::Validate { path } => {
-                let workflow = read_workflow(&path)?;
-                validate_workflow(&workflow)?;
-                println!("valid: {} v{}", workflow.id, workflow.version);
+                let loaded = load_workflow_file(path)?;
+                println!(
+                    "valid: {} v{} ({})",
+                    loaded.definition.id, loaded.definition.version, loaded.content_hash
+                );
+            }
+            WorkflowCommand::Create {
+                id,
+                name,
+                description,
+                prompt,
+                fields,
+            } => {
+                let inputs = fields
+                    .into_iter()
+                    .map(|field| parse_field(&field))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let workflow = WorkflowDefinition {
+                    schema_version: WORKFLOW_SCHEMA_VERSION.to_owned(),
+                    id,
+                    version: "1.0.0".to_owned(),
+                    name,
+                    description,
+                    inputs,
+                    steps: vec![StepDefinition::AiPrompt {
+                        id: "analyze".to_owned(),
+                        name: "Analyze".to_owned(),
+                        prompt,
+                        provider: None,
+                    }],
+                };
+                let created = FileWorkflowRepository::new(cli.workflows_dir).create(&workflow)?;
+                println!("created: {}", created.path.display());
             }
         },
         Command::Run {
@@ -79,13 +158,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if provider != "mock" {
                 return Err(format!("provider `{provider}` is not implemented yet").into());
             }
-            let raw = fs::read(&workflow)?;
-            let definition: WorkflowDefinition = serde_json::from_slice(&raw)?;
+            let loaded = load_workflow_file(workflow)?;
             let values = parse_inputs(inputs)?;
-            let hash = format!("sha256:{:x}", Sha256::digest(&raw));
             let engine = WorkflowEngine::new(MockProvider, JsonRunRepository::new(cli.runs_dir));
-            let run = engine.execute(&definition, values, hash).await?;
+            let run = engine
+                .execute(&loaded.definition, values, loaded.content_hash)
+                .await?;
             println!("{}", serde_json::to_string_pretty(&run)?);
+        }
+        Command::Prepare { workflow, inputs } => {
+            let loaded = load_workflow_file(workflow)?;
+            let prepared = prepare_workflow(&loaded.definition, parse_inputs(inputs)?)?;
+            println!("{}", serde_json::to_string_pretty(&prepared)?);
         }
         Command::Show { run_id } => {
             let repository = JsonRunRepository::new(cli.runs_dir);
@@ -110,10 +194,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn read_workflow(path: &PathBuf) -> Result<WorkflowDefinition, Box<dyn std::error::Error>> {
-    Ok(serde_json::from_str(&fs::read_to_string(path)?)?)
-}
-
 fn parse_inputs(values: Vec<String>) -> Result<BTreeMap<String, Value>, String> {
     values
         .into_iter()
@@ -126,4 +206,59 @@ fn parse_inputs(values: Vec<String>) -> Result<BTreeMap<String, Value>, String> 
             Ok((name.to_owned(), value))
         })
         .collect()
+}
+
+fn parse_field(value: &str) -> Result<InputDefinition, String> {
+    let parts: Vec<_> = value.splitn(4, ':').collect();
+    if parts.len() != 4 {
+        return Err(format!(
+            "invalid field `{value}`; expected NAME:TYPE:REQUIRED:LABEL"
+        ));
+    }
+    let kind = CliInputKind::from_str(parts[1], true)
+        .map_err(|_| format!("unknown input type `{}`", parts[1]))?;
+    let required = match parts[2].to_ascii_lowercase().as_str() {
+        "required" | "true" | "yes" => true,
+        "optional" | "false" | "no" => false,
+        _ => {
+            return Err(format!(
+                "invalid required flag `{}`; use required or optional",
+                parts[2]
+            ))
+        }
+    };
+    Ok(InputDefinition {
+        name: parts[0].to_owned(),
+        label: parts[3].to_owned(),
+        kind: kind.into(),
+        required,
+        description: None,
+        default: None,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_typed_field_definitions() {
+        let field = parse_field("TARGET:url:required:Target URL").unwrap();
+        assert_eq!(field.name, "TARGET");
+        assert_eq!(field.kind, InputKind::Url);
+        assert!(field.required);
+    }
+
+    #[test]
+    fn parses_json_scalar_inputs() {
+        let values = parse_inputs(vec![
+            "COUNT=4".to_owned(),
+            "ENABLED=true".to_owned(),
+            "LABEL=scan".to_owned(),
+        ])
+        .unwrap();
+        assert_eq!(values["COUNT"], 4);
+        assert_eq!(values["ENABLED"], true);
+        assert_eq!(values["LABEL"], "scan");
+    }
 }

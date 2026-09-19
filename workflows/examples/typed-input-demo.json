@@ -1,0 +1,63 @@
+{
+  "schemaVersion": "ptconductor.dev/workflow/v1alpha1",
+  "id": "typed-input-demo",
+  "version": "1.0.0",
+  "name": "Typed Input Demo",
+  "description": "Exercises every Week 4 input type without performing network activity.",
+  "inputs": [
+    {
+      "name": "TITLE",
+      "label": "Engagement title",
+      "type": "text",
+      "required": true
+    },
+    {
+      "name": "NOTES",
+      "label": "Operator notes",
+      "type": "textarea",
+      "required": false
+    },
+    {
+      "name": "TARGET",
+      "label": "Authorized target",
+      "type": "url",
+      "required": true
+    },
+    {
+      "name": "MAX_ITEMS",
+      "label": "Maximum items",
+      "type": "number",
+      "required": false,
+      "default": 10
+    },
+    {
+      "name": "INCLUDE_INFORMATIONAL",
+      "label": "Include informational findings",
+      "type": "boolean",
+      "required": false,
+      "default": true
+    },
+    {
+      "name": "EVIDENCE_FILE",
+      "label": "Evidence file",
+      "type": "file",
+      "required": false,
+      "description": "When supplied, this path must point to an existing file."
+    },
+    {
+      "name": "API_TOKEN",
+      "label": "Temporary API token",
+      "type": "secret",
+      "required": true,
+      "description": "Redacted from prepared previews and run metadata."
+    }
+  ],
+  "steps": [
+    {
+      "type": "ai_prompt",
+      "id": "prepare-review",
+      "name": "Prepare review",
+      "prompt": "Prepare <TITLE> for <TARGET>. Notes: <NOTES>. Limit: <MAX_ITEMS>. Include informational: <INCLUDE_INFORMATIONAL>. Evidence: <EVIDENCE_FILE>. Token: <API_TOKEN>."
+    }
+  ]
+}

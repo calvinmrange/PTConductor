@@ -10,5 +10,5 @@ async-trait.workspace = true
 ptc-domain = { path = "../ptc-domain" }
 ptc-engine = { path = "../ptc-engine" }
 serde_json.workspace = true
+sha2.workspace = true
 uuid.workspace = true
-

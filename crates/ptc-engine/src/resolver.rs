@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+};
 
 use ptc_domain::{InputDefinition, InputKind};
 use serde_json::Value;
@@ -49,7 +52,7 @@ impl VariableResolver {
                 values.insert(definition.name.clone(), Value::Null);
                 continue;
             };
-            validate_type(definition, &value)?;
+            validate_input_value(definition, &value, true)?;
             values.insert(definition.name.clone(), value);
         }
 
@@ -62,12 +65,28 @@ impl VariableResolver {
 
 impl ResolvedInputs {
     pub fn render(&self, template: &str) -> Result<String, EngineError> {
+        self.render_with_secrets(template, false)
+    }
+
+    pub fn render_redacted(&self, template: &str) -> Result<String, EngineError> {
+        self.render_with_secrets(template, true)
+    }
+
+    fn render_with_secrets(
+        &self,
+        template: &str,
+        redact_secrets: bool,
+    ) -> Result<String, EngineError> {
         let mut output = template.to_owned();
         for (name, value) in &self.values {
-            let replacement = match value {
+            let replacement = if redact_secrets && self.secret_names.contains(name) {
+                "***REDACTED***".to_owned()
+            } else {
+                match value {
                 Value::String(value) => value.clone(),
                 Value::Null => String::new(),
                 value => value.to_string(),
+                }
             };
             output = output.replace(&format!("<{name}>"), &replacement);
         }
@@ -97,14 +116,28 @@ impl ResolvedInputs {
     }
 }
 
-fn validate_type(definition: &InputDefinition, value: &Value) -> Result<(), EngineError> {
+pub(crate) fn validate_input_value(
+    definition: &InputDefinition,
+    value: &Value,
+    check_file_exists: bool,
+) -> Result<(), EngineError> {
+    let string_is_present = |value: &str| !definition.required || !value.trim().is_empty();
     let valid = match definition.kind {
-        InputKind::Text | InputKind::Textarea | InputKind::File | InputKind::Secret => {
-            value.is_string()
-        }
-        InputKind::Url => value
+        InputKind::Text | InputKind::Textarea | InputKind::Secret => value
             .as_str()
-            .is_some_and(|value| value.starts_with("http://") || value.starts_with("https://")),
+            .is_some_and(string_is_present),
+        InputKind::File => value.as_str().is_some_and(|value| {
+            string_is_present(value) && (!check_file_exists || Path::new(value).is_file())
+        }),
+        InputKind::Url => value.as_str().is_some_and(|value| {
+            let Some((_, remainder)) = value.split_once("://") else {
+                return false;
+            };
+            (value.starts_with("http://") || value.starts_with("https://"))
+                && !remainder.is_empty()
+                && !remainder.starts_with('/')
+                && !remainder.chars().any(char::is_whitespace)
+        }),
         InputKind::Number => value.is_number(),
         InputKind::Boolean => value.is_boolean(),
     };
@@ -114,7 +147,13 @@ fn validate_type(definition: &InputDefinition, value: &Value) -> Result<(), Engi
     } else {
         Err(EngineError::InvalidInput {
             name: definition.name.clone(),
-            reason: format!("value does not match {:?}", definition.kind),
+            reason: match definition.kind {
+                InputKind::File if check_file_exists => {
+                    "expected a path to an existing file".to_owned()
+                }
+                InputKind::Url => "expected a valid http:// or https:// URL".to_owned(),
+                _ => format!("value does not match {:?}", definition.kind),
+            },
         })
     }
 }
@@ -157,5 +196,29 @@ mod tests {
             resolved.redacted_values()["TOKEN"],
             Value::String("***REDACTED***".to_owned())
         );
+        assert_eq!(
+            resolved
+                .render_redacted("Review <TARGET> using <TOKEN>")
+                .unwrap(),
+            "Review https://example.test using ***REDACTED***"
+        );
+    }
+
+    #[test]
+    fn rejects_empty_required_text_and_invalid_urls() {
+        let empty = VariableResolver::resolve(
+            &[input("NAME", InputKind::Text, true)],
+            BTreeMap::from([("NAME".to_owned(), Value::String("  ".to_owned()))]),
+        );
+        assert!(empty.is_err());
+
+        let url = VariableResolver::resolve(
+            &[input("TARGET", InputKind::Url, true)],
+            BTreeMap::from([(
+                "TARGET".to_owned(),
+                Value::String("https:///missing-host".to_owned()),
+            )]),
+        );
+        assert!(url.is_err());
     }
 }

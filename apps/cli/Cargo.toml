@@ -17,7 +17,5 @@ ptc-persistence = { path = "../../crates/ptc-persistence" }
 ptc-providers = { path = "../../crates/ptc-providers" }
 ptc-reporting = { path = "../../crates/ptc-reporting" }
 serde_json.workspace = true
-sha2.workspace = true
 tokio.workspace = true
 uuid.workspace = true
-
