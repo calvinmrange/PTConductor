@@ -260,9 +260,12 @@ pub fn prepare_workflow(
 
 fn is_slug(value: &str) -> bool {
     !value.is_empty()
-        && value
-            .split('-')
-            .all(|part| !part.is_empty() && part.chars().all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit()))
+        && value.split('-').all(|part| {
+            !part.is_empty()
+                && part
+                    .chars()
+                    .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit())
+        })
 }
 
 fn is_variable_name(value: &str) -> bool {
@@ -355,7 +358,10 @@ mod tests {
         let prepared = prepare_workflow(
             &definition,
             BTreeMap::from([
-                ("TARGET".to_owned(), Value::String("https://example.test".to_owned())),
+                (
+                    "TARGET".to_owned(),
+                    Value::String("https://example.test".to_owned()),
+                ),
                 ("TOKEN".to_owned(), Value::String("super-secret".to_owned())),
             ]),
         )

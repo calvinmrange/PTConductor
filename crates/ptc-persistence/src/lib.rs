@@ -27,7 +27,7 @@ impl FileWorkflowRepository {
         collect_json_files(&self.root, &mut paths)?;
         let mut workflows = paths
             .iter()
-            .map(|path| load_workflow_file(path))
+            .map(load_workflow_file)
             .collect::<Result<Vec<_>, _>>()?;
         workflows.sort_by(|left, right| left.definition.name.cmp(&right.definition.name));
         Ok(workflows)
@@ -48,9 +48,8 @@ pub struct LoadedWorkflow {
 pub fn load_workflow_file(path: impl AsRef<Path>) -> Result<LoadedWorkflow, EngineError> {
     let path = path.as_ref();
     let contents = fs::read(path).map_err(repository_error)?;
-    let definition: WorkflowDefinition = serde_json::from_slice(&contents).map_err(|error| {
-        EngineError::InvalidWorkflow(format!("{}: {error}", path.display()))
-    })?;
+    let definition: WorkflowDefinition = serde_json::from_slice(&contents)
+        .map_err(|error| EngineError::InvalidWorkflow(format!("{}: {error}", path.display())))?;
     validate_workflow(&definition)?;
     Ok(LoadedWorkflow {
         path: path.to_path_buf(),

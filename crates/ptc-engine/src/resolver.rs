@@ -83,9 +83,9 @@ impl ResolvedInputs {
                 "***REDACTED***".to_owned()
             } else {
                 match value {
-                Value::String(value) => value.clone(),
-                Value::Null => String::new(),
-                value => value.to_string(),
+                    Value::String(value) => value.clone(),
+                    Value::Null => String::new(),
+                    value => value.to_string(),
                 }
             };
             output = output.replace(&format!("<{name}>"), &replacement);
@@ -123,9 +123,9 @@ pub(crate) fn validate_input_value(
 ) -> Result<(), EngineError> {
     let string_is_present = |value: &str| !definition.required || !value.trim().is_empty();
     let valid = match definition.kind {
-        InputKind::Text | InputKind::Textarea | InputKind::Secret => value
-            .as_str()
-            .is_some_and(string_is_present),
+        InputKind::Text | InputKind::Textarea | InputKind::Secret => {
+            value.as_str().is_some_and(string_is_present)
+        }
         InputKind::File => value.as_str().is_some_and(|value| {
             string_is_present(value) && (!check_file_exists || Path::new(value).is_file())
         }),

@@ -57,7 +57,9 @@ enum Command {
 #[derive(Debug, Subcommand)]
 enum WorkflowCommand {
     List,
-    Validate { path: PathBuf },
+    Validate {
+        path: PathBuf,
+    },
     Create {
         #[arg(long)]
         id: String,
