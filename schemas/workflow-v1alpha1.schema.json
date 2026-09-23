@@ -49,11 +49,11 @@
             "id": { "type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$" },
             "name": { "type": "string", "minLength": 1 },
             "prompt": { "type": "string", "minLength": 1 },
-            "provider": { "type": "string" }
+            "provider": { "type": "string" },
+            "outputFormat": { "enum": ["text", "json"], "default": "text" }
           }
         }
       ]
     }
   }
 }
-

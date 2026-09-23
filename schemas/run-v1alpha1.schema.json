@@ -34,6 +34,7 @@
           "startedAt": { "type": "string", "format": "date-time" },
           "completedAt": { "type": ["string", "null"], "format": "date-time" },
           "provider": { "type": "string" },
+          "model": { "type": ["string", "null"] },
           "output": { "type": "string" },
           "error": { "type": ["string", "null"] }
         }

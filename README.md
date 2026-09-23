@@ -54,7 +54,26 @@ cargo run -p ptconductor-cli -- workflow create \
   --prompt 'Review <TARGET> to depth <DEPTH> using <TOKEN>'
 ```
 
-`prepare` validates inputs and prints a redacted prompt preview without calling a provider. The deterministic mock provider lets the full engine run without credentials. Ollama and OpenAI-compatible adapters are the next implementation milestone.
+`prepare` validates inputs and prints a redacted prompt preview without calling a provider. The deterministic mock provider lets the full engine run without credentials.
+
+## Week 5: AI provider execution
+
+`technology-fingerprint.json` interprets observations you paste; it does **not** contact or scan the target. The CLI and desktop use the same provider adapters. Set your API key in the environment of the terminal launching PTConductor—never commit it or paste it into a workflow:
+
+```bash
+read -rsp 'OpenAI API key: ' OPENAI_API_KEY; export OPENAI_API_KEY; echo
+cargo run -p ptconductor-cli -- run workflows/examples/technology-fingerprint.json \
+  --provider openai --model gpt-4o-mini --allow-remote \
+  --input TARGET=https://example.test \
+  --input 'HEADERS=Server: nginx' \
+  --output-json runs/technology-result.json
+```
+
+This sends the supplied workflow inputs to the OpenAI API and may incur API charges. The API key is not included in run artifacts or command arguments. The CLI writes a new `runs/technology-result.json` file; it will not overwrite an existing file. Run artifacts also contain the validated JSON output. For the desktop, launch `npm run tauri dev` from that same terminal, select **Technology Fingerprint Analysis**, enter evidence, prepare, confirm remote transmission, and run. Model selection defaults to `gpt-4o-mini`. A ChatGPT subscription does not itself supply API credits; API billing is separate.
+
+Ollama uses `--provider ollama --model <installed-model>` and defaults to `http://127.0.0.1:11434`. OpenAI-compatible services can use `--base-url https://your-service.example/v1`; the desktop uses `PTCONDUCTOR_OPENAI_BASE_URL` or `PTCONDUCTOR_OLLAMA_BASE_URL` if configured. `--provider mock` stays available for offline checks. Provider errors omit response bodies so credentials and submitted observations are not echoed to the UI.
+
+The complete OpenAI/Kali smoke test is in [docs/week5-testing.md](docs/week5-testing.md).
 
 ## Development
 

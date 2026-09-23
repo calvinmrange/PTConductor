@@ -73,8 +73,8 @@ button { color: inherit; }
 .field.full { grid-column: 1 / -1; }
 .field-label { color: #cdd1d5; font-size: .76rem; font-weight: 700; }
 .field-label em { margin-left: 8px; color: var(--red); font: 500 .57rem ui-monospace, monospace; font-style: normal; text-transform: uppercase; }
-.field input, .field textarea, .field-row input, .field-row select { width: 100%; color: var(--ink); border: 1px solid #30363c; border-radius: 6px; outline: none; background: #0b0e10; }
-.field input, .field-row input, .field-row select { height: 43px; padding: 0 12px; }
+.field input, .field textarea, .field select, .field-row input, .field-row select { width: 100%; color: var(--ink); border: 1px solid #30363c; border-radius: 6px; outline: none; background: #0b0e10; }
+.field input, .field select, .field-row input, .field-row select { height: 43px; padding: 0 12px; }
 .field textarea { resize: vertical; padding: 12px; line-height: 1.5; }
 .field input:focus, .field textarea:focus, .field-row input:focus, .field-row select:focus { border-color: var(--red); box-shadow: 0 0 0 3px rgb(239 51 64 / 9%); }
 .field small { min-height: 1em; color: #697179; font-size: .65rem; }
@@ -111,6 +111,10 @@ pre { min-height: 110px; margin: 0 0 10px; padding: 15px; overflow: auto; color:
 .remove { height: 35px; border: 0; background: transparent; color: #747c83; font-size: 1.2rem; cursor: pointer; }
 .remove:hover { color: var(--red); }
 .prompt-field { margin-top: 28px; }
+.remote-notice { color: #b3bbc2; font-size: .76rem; line-height: 1.6; }
+.remote-notice code { color: #f4b7bd; }
+.consent { display: flex; align-items: center; gap: 9px; margin-top: 16px; color: #e8eaed; font-size: .78rem; }
+.consent input { accent-color: var(--red); }
 
 @media (max-width: 800px) {
   .app-shell { display: block; }

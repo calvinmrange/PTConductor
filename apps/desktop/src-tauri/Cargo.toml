@@ -16,6 +16,7 @@ tauri-build = { version = "2", features = [] }
 ptc-domain = { path = "../../../crates/ptc-domain" }
 ptc-engine = { path = "../../../crates/ptc-engine" }
 ptc-persistence = { path = "../../../crates/ptc-persistence" }
+ptc-providers = { path = "../../../crates/ptc-providers" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2", features = [] }

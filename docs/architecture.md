@@ -26,7 +26,7 @@ Workflow validation, typed input resolution, template rendering, provider invoca
 
 ### `ptc-providers`
 
-Built-in `AiProvider` implementations. The scaffold begins with a deterministic mock. Ollama and OpenAI-compatible HTTP adapters follow.
+Built-in `AiProvider` implementations for deterministic mock, local Ollama, and OpenAI-compatible HTTP APIs. JSON workflow steps request provider JSON mode, and the engine validates the returned JSON object before storing it.
 
 ### `ptc-persistence`
 
@@ -56,4 +56,3 @@ The initial executor supports `ai_prompt`. Later step types implement the same e
 - `report`
 
 Branching and dependency graphs should be added only after sequential multi-step runs have stable semantics.
-

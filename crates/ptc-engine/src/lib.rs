@@ -8,7 +8,7 @@ use chrono::Utc;
 pub use error::EngineError;
 pub use ports::{AiProvider, AiRequest, AiResponse, RunRepository, WorkflowRepository};
 use ptc_domain::{
-    InputKind, RunRecord, RunStatus, StepDefinition, StepRun, WorkflowDefinition,
+    InputKind, OutputFormat, RunRecord, RunStatus, StepDefinition, StepRun, WorkflowDefinition,
     WorkflowReference, RUN_SCHEMA_VERSION, WORKFLOW_SCHEMA_VERSION,
 };
 pub use resolver::{ResolvedInputs, VariableResolver};
@@ -36,6 +36,7 @@ pub struct PreparedStep {
     pub id: String,
     pub name: String,
     pub provider: Option<String>,
+    pub output_format: OutputFormat,
     pub prompt_preview: String,
 }
 
@@ -56,6 +57,20 @@ where
     ) -> Result<RunRecord, EngineError> {
         validate_workflow(workflow)?;
         let inputs = VariableResolver::resolve(&workflow.inputs, values)?;
+        for step in &workflow.steps {
+            let StepDefinition::AiPrompt { provider, .. } = step;
+            if provider
+                .as_ref()
+                .is_some_and(|name| name != self.provider.id())
+            {
+                return Err(EngineError::InvalidWorkflow(format!(
+                    "step `{}` requires provider `{}`; selected provider is `{}`",
+                    step.id(),
+                    provider.as_deref().unwrap_or_default(),
+                    self.provider.id()
+                )));
+            }
+        }
         let started_at = Utc::now();
         let mut run = RunRecord {
             schema_version: RUN_SCHEMA_VERSION.to_owned(),
@@ -80,6 +95,7 @@ where
                 id,
                 name: _,
                 prompt,
+                output_format,
                 ..
             } = step;
             let step_started = Utc::now();
@@ -90,6 +106,7 @@ where
                     workflow_id: workflow.id.clone(),
                     step_id: id.clone(),
                     prompt: rendered_prompt,
+                    output_format: *output_format,
                 })
                 .await
             {
@@ -101,6 +118,7 @@ where
                         started_at: step_started,
                         completed_at: Some(Utc::now()),
                         provider: self.provider.id().to_owned(),
+                        model: None,
                         output: String::new(),
                         error: Some(error.to_string()),
                     });
@@ -111,13 +129,46 @@ where
                 }
             };
 
+            let output = if *output_format == OutputFormat::Json {
+                match serde_json::from_str::<Value>(&response.content) {
+                    Ok(mut value) if value.is_object() => {
+                        inputs.redact_json(&mut value);
+                        serde_json::to_string_pretty(&value).map_err(|_| {
+                            EngineError::Provider("cannot serialize JSON response".to_owned())
+                        })?
+                    }
+                    _ => {
+                        let error = EngineError::Provider(
+                            "provider returned invalid JSON object output".to_owned(),
+                        );
+                        run.steps.push(StepRun {
+                            id: id.clone(),
+                            status: RunStatus::Failed,
+                            started_at: step_started,
+                            completed_at: Some(Utc::now()),
+                            provider: self.provider.id().to_owned(),
+                            model: None,
+                            output: String::new(),
+                            error: Some(error.to_string()),
+                        });
+                        run.status = RunStatus::Failed;
+                        run.completed_at = Some(Utc::now());
+                        self.runs.save(&run).await?;
+                        return Err(error);
+                    }
+                }
+            } else {
+                inputs.redact_output(&response.content)
+            };
+
             run.steps.push(StepRun {
                 id: id.clone(),
                 status: RunStatus::Completed,
                 started_at: step_started,
                 completed_at: Some(Utc::now()),
                 provider: response.provider,
-                output: response.content,
+                model: response.model,
+                output,
                 error: None,
             });
             self.runs.save(&run).await?;
@@ -207,7 +258,21 @@ pub fn validate_workflow(workflow: &WorkflowDefinition) -> Result<(), EngineErro
                 step.id()
             )));
         }
-        let StepDefinition::AiPrompt { name, prompt, .. } = step;
+        let StepDefinition::AiPrompt {
+            name,
+            prompt,
+            provider,
+            ..
+        } = step;
+        if provider
+            .as_ref()
+            .is_some_and(|value| value.trim().is_empty())
+        {
+            return Err(EngineError::InvalidWorkflow(format!(
+                "step `{}` has an empty provider",
+                step.id()
+            )));
+        }
         if name.trim().is_empty() || prompt.trim().is_empty() {
             return Err(EngineError::InvalidWorkflow(format!(
                 "step `{}` must have a name and prompt",
@@ -241,10 +306,12 @@ pub fn prepare_workflow(
                 name,
                 prompt,
                 provider,
+                output_format,
             } => Ok(PreparedStep {
                 id: id.clone(),
                 name: name.clone(),
                 provider: provider.clone(),
+                output_format: *output_format,
                 prompt_preview: inputs.render_redacted(prompt)?,
             }),
         })
@@ -329,6 +396,7 @@ mod tests {
                 name: "Review".to_owned(),
                 prompt: "Review <TARGET>".to_owned(),
                 provider: None,
+                output_format: OutputFormat::Text,
             }],
         }
     }

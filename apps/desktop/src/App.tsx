@@ -26,6 +26,7 @@ type WorkflowDefinition = {
     name: string;
     prompt: string;
     provider?: string;
+    outputFormat?: "text" | "json";
   }>;
 };
 
@@ -58,6 +59,12 @@ type PreparedWorkflow = {
 };
 
 type DraftField = Pick<InputDefinition, "name" | "label" | "type" | "required">;
+
+type RunRecord = {
+  id: string;
+  status: string;
+  steps: Array<{ id: string; status: string; provider: string; model?: string; output: string; error?: string }>;
+};
 
 const schemaVersion = "ptconductor.dev/workflow/v1alpha1";
 const demoWorkflow: WorkflowDocument = {
@@ -100,6 +107,10 @@ export function App() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(true);
   const [creating, setCreating] = useState(false);
+  const [provider, setProvider] = useState<"openai" | "ollama" | "mock">("openai");
+  const [model, setModel] = useState("gpt-4o-mini");
+  const [allowRemote, setAllowRemote] = useState(false);
+  const [run, setRun] = useState<RunRecord | null>(null);
 
   async function refresh(preferredPath?: string) {
     const list = isTauri() ? await invoke<WorkflowSummary[]>("list_workflows") : [summaryOf(demoWorkflow)];
@@ -112,6 +123,8 @@ export function App() {
     setBusy(true);
     setError("");
     setPrepared(null);
+    setRun(null);
+    setAllowRemote(false);
     try {
       const document = isTauri()
         ? await invoke<WorkflowDocument>("load_workflow", { path: summary.path })
@@ -143,11 +156,7 @@ export function App() {
     if (!selected) return;
     setBusy(true);
     setError("");
-    const supplied = Object.fromEntries(
-      selected.definition.inputs
-        .filter((input) => input.required || (values[input.name] !== "" && values[input.name] !== undefined))
-        .map((input) => [input.name, values[input.name] ?? ""]),
-    );
+    const supplied = suppliedValues();
     try {
       const result = isTauri()
         ? await invoke<PreparedWorkflow>("prepare_workflow", { path: selected.path, values: supplied })
@@ -155,6 +164,36 @@ export function App() {
       setPrepared(result);
     } catch (cause) {
       setPrepared(null);
+      setError(String(cause));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function suppliedValues(): Record<string, JsonValue> {
+    if (!selected) return {};
+    return Object.fromEntries(
+      selected.definition.inputs
+        .filter((input) => input.required || (values[input.name] !== "" && values[input.name] !== undefined))
+        .map((input) => [input.name, values[input.name] ?? ""]),
+    );
+  }
+
+  async function execute() {
+    if (!selected || !isTauri()) return;
+    setBusy(true);
+    setRun(null);
+    setError("");
+    try {
+      const result = await invoke<RunRecord>("run_workflow", {
+        path: selected.path,
+        values: suppliedValues(),
+        provider,
+        model: provider === "mock" ? "mock" : model,
+        allowRemote,
+      });
+      setRun(result);
+    } catch (cause) {
       setError(String(cause));
     } finally {
       setBusy(false);
@@ -226,7 +265,12 @@ export function App() {
                     key={input.name}
                     definition={input}
                     value={values[input.name]}
-                    onChange={(value) => setValues((current) => ({ ...current, [input.name]: value }))}
+                    onChange={(value) => {
+                      setValues((current) => ({ ...current, [input.name]: value }));
+                      setPrepared(null);
+                      setRun(null);
+                      setAllowRemote(false);
+                    }}
                   />
                 ))}
               </div>
@@ -237,6 +281,30 @@ export function App() {
               </div>
             </form>
             <PreparedPanel prepared={prepared} />
+            {prepared && <section className="preview-panel">
+              <div className="form-title"><span>03</span><div><h3>Run with a provider</h3><p>Prompts are transmitted only when you click Run.</p></div></div>
+              <div className="field-grid">
+                <label className="field"><span className="field-label">Provider</span>
+                  <select value={provider} onChange={(event) => {
+                    const next = event.target.value as typeof provider;
+                    setProvider(next);
+                    setModel(next === "openai" ? "gpt-4o-mini" : next === "ollama" ? "llama3.2" : "mock");
+                    setAllowRemote(false);
+                    setRun(null);
+                  }}><option value="openai">OpenAI-compatible</option><option value="ollama">Ollama (local)</option><option value="mock">Mock (offline)</option></select>
+                </label>
+                <label className="field"><span className="field-label">Model</span><input value={model} onChange={(event) => setModel(event.target.value)} disabled={provider === "mock"} /></label>
+              </div>
+              {provider === "openai" && <p className="remote-notice">The workflow prompt and inputs will be sent to the configured OpenAI-compatible endpoint. Set <code>OPENAI_API_KEY</code> in the terminal before launching the app. Do not paste it into a workflow field.</p>}
+              {provider === "openai" && <label className="consent"><input type="checkbox" checked={allowRemote} onChange={(event) => setAllowRemote(event.target.checked)} /> I authorize sending these workflow inputs to the remote provider.</label>}
+              {error && <div className="error" role="alert">{error}</div>}
+              <div className="form-actions"><span>Responses are saved locally as run JSON artifacts.</span><button type="button" className="primary" onClick={execute} disabled={busy || !isTauri() || (provider === "openai" && !allowRemote)}>{busy ? "Running…" : "Run workflow"}<b>→</b></button></div>
+              {!isTauri() && <p className="remote-notice">Open the Tauri desktop app to run workflows. Browser preview does not call providers.</p>}
+            </section>}
+            {run && <section className="preview-panel">
+              <div className="form-title"><span>04</span><div><h3>Results</h3><p>Run {run.id} · {run.status}</p></div></div>
+              {run.steps.map((step) => <div key={step.id}><h4>{step.id} · {step.provider}{step.model ? ` / ${step.model}` : ""}</h4><pre>{step.output || step.error}</pre></div>)}
+            </section>}
           </>
         ) : (
           <div className="center-state">{busy ? "Loading workflows…" : "Create a workflow to begin."}</div>
@@ -297,6 +365,7 @@ function WorkflowCreator({ onCancel, onCreated }: { onCancel: () => void; onCrea
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [prompt, setPrompt] = useState("Analyze the authorized target using these inputs: <TARGET>");
+  const [outputFormat, setOutputFormat] = useState<"text" | "json">("text");
   const [fields, setFields] = useState<DraftField[]>([{ name: "TARGET", label: "Target", type: "text", required: true }]);
   const [error, setError] = useState("");
   const canSubmit = useMemo(() => Boolean(id && name && prompt && fields.every((field) => field.name && field.label)), [id, name, prompt, fields]);
@@ -315,7 +384,7 @@ function WorkflowCreator({ onCancel, onCreated }: { onCancel: () => void; onCrea
       name,
       description: description || undefined,
       inputs: fields,
-      steps: [{ type: "ai_prompt", id: "analyze", name: "Analyze", prompt }],
+      steps: [{ type: "ai_prompt", id: "analyze", name: "Analyze", prompt, outputFormat }],
     };
     try {
       const document = isTauri()
@@ -350,6 +419,7 @@ function WorkflowCreator({ onCancel, onCreated }: { onCancel: () => void; onCrea
         ))}
       </div>
       <label className="field full prompt-field"><span className="field-label">Prompt template <em>required</em></span><textarea rows={6} value={prompt} onChange={(event) => setPrompt(event.target.value)} required /><small>Reference declared inputs with angle brackets, such as &lt;TARGET&gt;.</small></label>
+      <label className="field"><span className="field-label">Response format</span><select value={outputFormat} onChange={(event) => setOutputFormat(event.target.value as "text" | "json")}><option value="text">Text</option><option value="json">JSON object</option></select></label>
       {error && <div className="error">{error}</div>}
       <div className="form-actions"><button type="button" className="secondary" onClick={onCancel}>Cancel</button><button className="primary" disabled={!canSubmit}>Create workflow <b>→</b></button></div>
     </form>

@@ -157,7 +157,7 @@ fn collect_json_files(root: &Path, paths: &mut Vec<PathBuf>) -> Result<(), Engin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ptc_domain::{StepDefinition, WORKFLOW_SCHEMA_VERSION};
+    use ptc_domain::{OutputFormat, StepDefinition, WORKFLOW_SCHEMA_VERSION};
 
     fn workflow() -> WorkflowDefinition {
         WorkflowDefinition {
@@ -172,6 +172,7 @@ mod tests {
                 name: "Review".to_owned(),
                 prompt: "Review the supplied context".to_owned(),
                 provider: None,
+                output_format: OutputFormat::Text,
             }],
         }
     }

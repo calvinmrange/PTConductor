@@ -49,6 +49,14 @@ pub enum InputKind {
     Secret,
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputFormat {
+    #[default]
+    Text,
+    Json,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum StepDefinition {
@@ -58,6 +66,8 @@ pub enum StepDefinition {
         prompt: String,
         #[serde(default)]
         provider: Option<String>,
+        #[serde(default, rename = "outputFormat")]
+        output_format: OutputFormat,
     },
 }
 
@@ -112,6 +122,8 @@ pub struct StepRun {
     #[serde(default)]
     pub completed_at: Option<DateTime<Utc>>,
     pub provider: String,
+    #[serde(default)]
+    pub model: Option<String>,
     pub output: String,
     #[serde(default)]
     pub error: Option<String>,

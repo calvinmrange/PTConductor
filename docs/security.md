@@ -12,6 +12,7 @@ The scaffold permits only AI prompt steps. It does not execute shell commands, s
 - Secret inputs are marked at definition time and replaced with `***REDACTED***` in stored run inputs.
 - Logs and errors pass through a centralized redaction layer before release builds.
 - Remote providers must be visibly identified before potentially sensitive target data is transmitted.
+- Week 5 provider execution uses a separate explicit remote-transmission confirmation. API keys are read only by the Rust backend from `OPENAI_API_KEY`; the frontend never receives them. Remove tokens, cookies, and personal data from observations before sending a prompt.
 - Active steps must pass engagement-scope validation before execution.
 - AI responses are untrusted content; application state is produced by deterministic code.
 - Structured AI suggestions are schema-validated before being promoted to findings.
@@ -28,4 +29,3 @@ Command steps must launch a fixed executable with an argument array rather than 
 - secret-aware redaction
 
 Dry-run and documentation modes must remain available even when active execution is implemented.
-

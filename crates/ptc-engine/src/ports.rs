@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use ptc_domain::{RunRecord, WorkflowDefinition};
+use ptc_domain::{OutputFormat, RunRecord, WorkflowDefinition};
 use uuid::Uuid;
 
 use crate::EngineError;
@@ -9,6 +9,7 @@ pub struct AiRequest {
     pub workflow_id: String,
     pub step_id: String,
     pub prompt: String,
+    pub output_format: OutputFormat,
 }
 
 #[derive(Debug, Clone)]

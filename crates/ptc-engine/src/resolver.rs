@@ -77,28 +77,68 @@ impl ResolvedInputs {
         template: &str,
         redact_secrets: bool,
     ) -> Result<String, EngineError> {
-        let mut output = template.to_owned();
-        for (name, value) in &self.values {
-            let replacement = if redact_secrets && self.secret_names.contains(name) {
-                "***REDACTED***".to_owned()
-            } else {
-                match value {
-                    Value::String(value) => value.clone(),
-                    Value::Null => String::new(),
-                    value => value.to_string(),
-                }
+        let mut output = String::new();
+        let mut remaining = template;
+        while let Some(start) = remaining.find('<') {
+            output.push_str(&remaining[..start]);
+            let after_start = &remaining[start + 1..];
+            let Some(end) = after_start.find('>') else {
+                output.push_str(&remaining[start..]);
+                return Ok(output);
             };
-            output = output.replace(&format!("<{name}>"), &replacement);
-        }
-
-        if let Some(start) = output.find('<') {
-            if let Some(end) = output[start..].find('>') {
-                return Err(EngineError::UnresolvedVariable(
-                    output[start + 1..start + end].to_owned(),
-                ));
+            let name = &after_start[..end];
+            if is_placeholder(name) {
+                let value = self
+                    .values
+                    .get(name)
+                    .ok_or_else(|| EngineError::UnresolvedVariable(name.to_owned()))?;
+                if redact_secrets && self.secret_names.contains(name) {
+                    output.push_str("***REDACTED***");
+                } else {
+                    match value {
+                        Value::String(value) => output.push_str(value),
+                        Value::Null => {}
+                        value => output.push_str(&value.to_string()),
+                    }
+                }
+            } else {
+                output.push_str(&remaining[start..start + end + 2]);
             }
+            remaining = &after_start[end + 1..];
         }
+        output.push_str(remaining);
         Ok(output)
+    }
+
+    pub fn redact_output(&self, text: &str) -> String {
+        self.secret_names
+            .iter()
+            .fold(text.to_owned(), |current, name| {
+                let Some(secret) = self.values.get(name).and_then(Value::as_str) else {
+                    return current;
+                };
+                if secret.is_empty() {
+                    return current;
+                }
+                current.replace(secret, "***REDACTED***")
+            })
+    }
+
+    pub fn redact_json(&self, value: &mut Value) {
+        match value {
+            Value::String(text) => *text = self.redact_output(text),
+            Value::Array(items) => {
+                for item in items {
+                    self.redact_json(item);
+                }
+            }
+            Value::Object(fields) => {
+                for item in fields.values_mut() {
+                    self.redact_json(item);
+                }
+            }
+            _ => {}
+        }
     }
 
     pub fn redacted_values(&self) -> BTreeMap<String, Value> {
@@ -114,6 +154,13 @@ impl ResolvedInputs {
             })
             .collect()
     }
+}
+
+fn is_placeholder(name: &str) -> bool {
+    name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
 }
 
 pub(crate) fn validate_input_value(
@@ -220,5 +267,34 @@ mod tests {
             )]),
         );
         assert!(url.is_err());
+    }
+
+    #[test]
+    fn preserves_html_and_does_not_expand_supplied_tags() {
+        let resolved = VariableResolver::resolve(
+            &[
+                input("HTML", InputKind::Textarea, true),
+                input("TOKEN", InputKind::Secret, true),
+            ],
+            BTreeMap::from([
+                (
+                    "HTML".to_owned(),
+                    Value::String("<div><TOKEN></div>".to_owned()),
+                ),
+                ("TOKEN".to_owned(), Value::String("private".to_owned())),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(
+            resolved.render("Evidence: <HTML>").unwrap(),
+            "Evidence: <div><TOKEN></div>"
+        );
+        assert_eq!(
+            resolved.render_redacted("<HTML> <TOKEN>").unwrap(),
+            "<div><TOKEN></div> ***REDACTED***"
+        );
+        let mut output = serde_json::json!({"quote":"private", "nested":["private"]});
+        resolved.redact_json(&mut output);
+        assert_eq!(output["nested"][0], "***REDACTED***");
     }
 }

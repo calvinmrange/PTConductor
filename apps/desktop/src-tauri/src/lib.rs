@@ -1,8 +1,10 @@
 use std::{collections::BTreeMap, env, path::PathBuf};
 
 use ptc_domain::WorkflowDefinition;
-use ptc_engine::{prepare_workflow as prepare_definition, PreparedWorkflow};
-use ptc_persistence::{load_workflow_file, FileWorkflowRepository, LoadedWorkflow};
+use ptc_domain::RunRecord;
+use ptc_engine::{prepare_workflow as prepare_definition, PreparedWorkflow, WorkflowEngine};
+use ptc_persistence::{load_workflow_file, FileWorkflowRepository, JsonRunRepository, LoadedWorkflow};
+use ptc_providers::ConfiguredProvider;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -102,6 +104,37 @@ fn create_workflow(workflow: WorkflowDefinition) -> Result<WorkflowDocument, Str
         .map_err(|error| error.to_string())
 }
 
+#[tauri::command]
+async fn run_workflow(
+    path: String,
+    values: BTreeMap<String, Value>,
+    provider: String,
+    model: String,
+    allow_remote: bool,
+) -> Result<RunRecord, String> {
+    if provider == "openai" && !allow_remote {
+        return Err("Confirm remote transmission before running an OpenAI workflow".to_owned());
+    }
+    let path = approved_workflow_path(path)?;
+    let loaded = load_workflow_file(path).map_err(|error| error.to_string())?;
+    let base_url = match provider.as_str() {
+        "openai" => env::var("PTCONDUCTOR_OPENAI_BASE_URL").ok(),
+        "ollama" => env::var("PTCONDUCTOR_OLLAMA_BASE_URL").ok(),
+        _ => None,
+    };
+    let configured = ConfiguredProvider::new(&provider, &model, base_url.as_deref())
+        .map_err(|error| error.to_string())?;
+    let engine = WorkflowEngine::new(configured, JsonRunRepository::new(run_root()));
+    engine.execute(&loaded.definition, values, loaded.content_hash)
+        .await.map_err(|error| error.to_string())
+}
+
+fn run_root() -> PathBuf {
+    env::var_os("PTCONDUCTOR_RUNS_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../runs"))
+}
+
 fn workflow_root() -> PathBuf {
     env::var_os("PTCONDUCTOR_WORKFLOWS_DIR")
         .map(PathBuf::from)
@@ -131,7 +164,8 @@ pub fn run() {
             list_workflows,
             load_workflow,
             prepare_workflow,
-            create_workflow
+            create_workflow,
+            run_workflow
         ])
         .run(tauri::generate_context!())
         .expect("failed to run PTConductor");

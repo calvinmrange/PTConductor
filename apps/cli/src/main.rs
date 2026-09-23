@@ -1,12 +1,13 @@
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{collections::BTreeMap, fs::OpenOptions, io::Write, path::PathBuf};
 
 use clap::{Parser, Subcommand, ValueEnum};
 use ptc_domain::{
-    InputDefinition, InputKind, StepDefinition, WorkflowDefinition, WORKFLOW_SCHEMA_VERSION,
+    InputDefinition, InputKind, OutputFormat, StepDefinition, WorkflowDefinition,
+    WORKFLOW_SCHEMA_VERSION,
 };
 use ptc_engine::{prepare_workflow, RunRepository, WorkflowEngine};
 use ptc_persistence::{load_workflow_file, FileWorkflowRepository, JsonRunRepository};
-use ptc_providers::MockProvider;
+use ptc_providers::ConfiguredProvider;
 use ptc_reporting::{MarkdownRenderer, ReportRenderer};
 use serde_json::Value;
 use uuid::Uuid;
@@ -38,6 +39,17 @@ enum Command {
         inputs: Vec<String>,
         #[arg(long, default_value = "mock")]
         provider: String,
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long)]
+        base_url: Option<String>,
+        #[arg(
+            long,
+            help = "Acknowledge transmission of workflow inputs to a remote provider"
+        )]
+        allow_remote: bool,
+        #[arg(long, help = "Write the final JSON step output to a new file")]
+        output_json: Option<PathBuf>,
     },
     Prepare {
         workflow: PathBuf,
@@ -69,6 +81,8 @@ enum WorkflowCommand {
         description: Option<String>,
         #[arg(long)]
         prompt: String,
+        #[arg(long, default_value = "text")]
+        output_format: CliOutputFormat,
         #[arg(long = "field", value_name = "NAME:TYPE:REQUIRED:LABEL")]
         fields: Vec<String>,
     },
@@ -83,6 +97,21 @@ enum CliInputKind {
     Boolean,
     File,
     Secret,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum CliOutputFormat {
+    Text,
+    Json,
+}
+
+impl From<CliOutputFormat> for OutputFormat {
+    fn from(value: CliOutputFormat) -> Self {
+        match value {
+            CliOutputFormat::Text => Self::Text,
+            CliOutputFormat::Json => Self::Json,
+        }
+    }
 }
 
 impl From<CliInputKind> for InputKind {
@@ -128,6 +157,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 name,
                 description,
                 prompt,
+                output_format,
                 fields,
             } => {
                 let inputs = fields
@@ -146,6 +176,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         name: "Analyze".to_owned(),
                         prompt,
                         provider: None,
+                        output_format: output_format.into(),
                     }],
                 };
                 let created = FileWorkflowRepository::new(cli.workflows_dir).create(&workflow)?;
@@ -156,16 +187,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             workflow,
             inputs,
             provider,
+            model,
+            base_url,
+            allow_remote,
+            output_json,
         } => {
-            if provider != "mock" {
-                return Err(format!("provider `{provider}` is not implemented yet").into());
+            if provider == "openai" && !allow_remote {
+                return Err("OpenAI-compatible provider transmits workflow inputs externally; pass --allow-remote to confirm".into());
             }
             let loaded = load_workflow_file(workflow)?;
             let values = parse_inputs(inputs)?;
-            let engine = WorkflowEngine::new(MockProvider, JsonRunRepository::new(cli.runs_dir));
+            let model = model.unwrap_or_else(|| match provider.as_str() {
+                "openai" => "gpt-4o-mini".to_owned(),
+                "ollama" => "llama3.2".to_owned(),
+                _ => "mock".to_owned(),
+            });
+            let provider = ConfiguredProvider::new(&provider, &model, base_url.as_deref())?;
+            let engine = WorkflowEngine::new(provider, JsonRunRepository::new(cli.runs_dir));
             let run = engine
                 .execute(&loaded.definition, values, loaded.content_hash)
                 .await?;
+            if let Some(path) = output_json {
+                let final_step = run.steps.last().ok_or("run had no steps")?;
+                let value: Value = serde_json::from_str(&final_step.output)
+                    .map_err(|_| "final step output is not JSON; choose a JSON workflow")?;
+                let mut file = OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&path)?;
+                serde_json::to_writer_pretty(&mut file, &value)?;
+                file.write_all(b"\n")?;
+                eprintln!("saved JSON output: {}", path.display());
+            }
             println!("{}", serde_json::to_string_pretty(&run)?);
         }
         Command::Prepare { workflow, inputs } => {
