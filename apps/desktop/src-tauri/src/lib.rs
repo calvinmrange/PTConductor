@@ -1,9 +1,11 @@
 use std::{collections::BTreeMap, env, path::PathBuf};
 
-use ptc_domain::WorkflowDefinition;
 use ptc_domain::RunRecord;
+use ptc_domain::WorkflowDefinition;
 use ptc_engine::{prepare_workflow as prepare_definition, PreparedWorkflow, WorkflowEngine};
-use ptc_persistence::{load_workflow_file, FileWorkflowRepository, JsonRunRepository, LoadedWorkflow};
+use ptc_persistence::{
+    load_workflow_file, FileWorkflowRepository, JsonRunRepository, LoadedWorkflow,
+};
 use ptc_providers::ConfiguredProvider;
 use serde::Serialize;
 use serde_json::Value;
@@ -112,8 +114,8 @@ async fn run_workflow(
     model: String,
     allow_remote: bool,
 ) -> Result<RunRecord, String> {
-    if provider == "openai" && !allow_remote {
-        return Err("Confirm remote transmission before running an OpenAI workflow".to_owned());
+    if matches!(provider.as_str(), "openai" | "codex") && !allow_remote {
+        return Err("Confirm remote transmission before running this workflow".to_owned());
     }
     let path = approved_workflow_path(path)?;
     let loaded = load_workflow_file(path).map_err(|error| error.to_string())?;
@@ -125,8 +127,10 @@ async fn run_workflow(
     let configured = ConfiguredProvider::new(&provider, &model, base_url.as_deref())
         .map_err(|error| error.to_string())?;
     let engine = WorkflowEngine::new(configured, JsonRunRepository::new(run_root()));
-    engine.execute(&loaded.definition, values, loaded.content_hash)
-        .await.map_err(|error| error.to_string())
+    engine
+        .execute(&loaded.definition, values, loaded.content_hash)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 fn run_root() -> PathBuf {

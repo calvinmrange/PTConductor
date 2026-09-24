@@ -56,9 +56,30 @@ cargo run -p ptconductor-cli -- workflow create \
 
 `prepare` validates inputs and prints a redacted prompt preview without calling a provider. The deterministic mock provider lets the full engine run without credentials.
 
-## Week 5: AI provider execution
+## AI provider execution
 
-`technology-fingerprint.json` interprets observations you paste; it does **not** contact or scan the target. The CLI and desktop use the same provider adapters. Set your API key in the environment of the terminal launching PTConductor—never commit it or paste it into a workflow:
+`technology-fingerprint.json` asks for an interpretation of observations you paste, not an active scan. The CLI and desktop use the same provider adapters.
+
+### Codex with a ChatGPT sign-in (Kali)
+
+Install the Codex CLI and sign in using **ChatGPT** (not an API key). PTConductor checks the login mode and never reads Codex credentials:
+
+```bash
+npm install -g @openai/codex
+codex login
+codex login status
+cargo run -p ptconductor-cli -- run workflows/examples/technology-fingerprint.json \
+  --provider codex --model gpt-6-sol --allow-remote \
+  --input TARGET=https://example.test \
+  --input 'HEADERS=Server: nginx' \
+  --output-json runs/codex-technology-result.json
+```
+
+Codex consumes your ChatGPT/Codex allowance, subject to its limits. It runs as an agent in a read-only sandbox from an empty temporary directory; do not give it sensitive evidence or trust prompt text as a tool restriction. Launch the desktop from a terminal with `codex` on `PATH`, choose **Codex (ChatGPT sign-in)**, then confirm remote transmission. See [docs/codex-kali.md](docs/codex-kali.md) for the full test.
+
+### OpenAI API key
+
+Set your API key in the environment of the terminal launching PTConductor—never commit it or paste it into a workflow:
 
 ```bash
 read -rsp 'OpenAI API key: ' OPENAI_API_KEY; export OPENAI_API_KEY; echo

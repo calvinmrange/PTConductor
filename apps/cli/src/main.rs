@@ -192,13 +192,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             allow_remote,
             output_json,
         } => {
-            if provider == "openai" && !allow_remote {
-                return Err("OpenAI-compatible provider transmits workflow inputs externally; pass --allow-remote to confirm".into());
+            if matches!(provider.as_str(), "openai" | "codex") && !allow_remote {
+                return Err(format!("provider `{provider}` sends workflow inputs to OpenAI; pass --allow-remote to confirm").into());
             }
             let loaded = load_workflow_file(workflow)?;
             let values = parse_inputs(inputs)?;
             let model = model.unwrap_or_else(|| match provider.as_str() {
                 "openai" => "gpt-6-luna".to_owned(),
+                "codex" => "gpt-6-sol".to_owned(),
                 "ollama" => "llama3.2".to_owned(),
                 _ => "mock".to_owned(),
             });

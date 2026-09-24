@@ -107,8 +107,8 @@ export function App() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(true);
   const [creating, setCreating] = useState(false);
-  const [provider, setProvider] = useState<"openai" | "ollama" | "mock">("openai");
-  const [model, setModel] = useState("gpt-6-luna");
+  const [provider, setProvider] = useState<"openai" | "codex" | "ollama" | "mock">("codex");
+  const [model, setModel] = useState("gpt-6-sol");
   const [allowRemote, setAllowRemote] = useState(false);
   const [run, setRun] = useState<RunRecord | null>(null);
 
@@ -288,17 +288,18 @@ export function App() {
                   <select value={provider} onChange={(event) => {
                     const next = event.target.value as typeof provider;
                     setProvider(next);
-                    setModel(next === "openai" ? "gpt-6-luna" : next === "ollama" ? "llama3.2" : "mock");
+                    setModel(next === "openai" ? "gpt-6-luna" : next === "codex" ? "gpt-6-sol" : next === "ollama" ? "llama3.2" : "mock");
                     setAllowRemote(false);
                     setRun(null);
-                  }}><option value="openai">OpenAI-compatible</option><option value="ollama">Ollama (local)</option><option value="mock">Mock (offline)</option></select>
+                  }}><option value="codex">Codex (ChatGPT sign-in)</option><option value="openai">OpenAI-compatible (API key)</option><option value="ollama">Ollama (local)</option><option value="mock">Mock (offline)</option></select>
                 </label>
                 <label className="field"><span className="field-label">Model</span><input value={model} onChange={(event) => setModel(event.target.value)} disabled={provider === "mock"} /></label>
               </div>
               {provider === "openai" && <p className="remote-notice">The workflow prompt and inputs will be sent to the configured OpenAI-compatible endpoint. Set <code>OPENAI_API_KEY</code> in the terminal before launching the app. Do not paste it into a workflow field.</p>}
-              {provider === "openai" && <label className="consent"><input type="checkbox" checked={allowRemote} onChange={(event) => setAllowRemote(event.target.checked)} /> I authorize sending these workflow inputs to the remote provider.</label>}
+              {provider === "codex" && <p className="remote-notice">Codex uses your local CLI sign-in and sends this workflow to your ChatGPT account. Run <code>codex login</code> with ChatGPT first. It starts in an empty temporary directory with a read-only sandbox; an agent may still read accessible files. Remove sensitive content from evidence.</p>}
+              {(provider === "openai" || provider === "codex") && <label className="consent"><input type="checkbox" checked={allowRemote} onChange={(event) => setAllowRemote(event.target.checked)} /> I authorize sending these workflow inputs to the selected remote provider.</label>}
               {error && <div className="error" role="alert">{error}</div>}
-              <div className="form-actions"><span>Responses are saved locally as run JSON artifacts.</span><button type="button" className="primary" onClick={execute} disabled={busy || !isTauri() || (provider === "openai" && !allowRemote)}>{busy ? "Running…" : "Run workflow"}<b>→</b></button></div>
+              <div className="form-actions"><span>Responses are saved locally as run JSON artifacts.</span><button type="button" className="primary" onClick={execute} disabled={busy || !isTauri() || ((provider === "openai" || provider === "codex") && !allowRemote)}>{busy ? "Running…" : "Run workflow"}<b>→</b></button></div>
               {!isTauri() && <p className="remote-notice">Open the Tauri desktop app to run workflows. Browser preview does not call providers.</p>}
             </section>}
             {run && <section className="preview-panel">

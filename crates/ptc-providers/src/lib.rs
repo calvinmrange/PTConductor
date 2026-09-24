@@ -3,7 +3,13 @@ use ptc_domain::OutputFormat;
 use ptc_engine::{AiProvider, AiRequest, AiResponse, EngineError};
 use reqwest::{Client, Url};
 use serde_json::{json, Value};
-use std::time::Duration;
+use std::{fs, path::PathBuf, process::Stdio, time::Duration};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    process::Command,
+    time::timeout,
+};
+use uuid::Uuid;
 
 const OPENAI_BASE_URL: &str = "https://api.openai.com/v1/";
 const OLLAMA_BASE_URL: &str = "http://127.0.0.1:11434/";
@@ -13,6 +19,7 @@ pub enum ConfiguredProvider {
     Mock(MockProvider),
     OpenAi(OpenAiProvider),
     Ollama(OllamaProvider),
+    Codex(CodexProvider),
 }
 
 impl ConfiguredProvider {
@@ -21,6 +28,10 @@ impl ConfiguredProvider {
             "mock" => Ok(Self::Mock(MockProvider)),
             "openai" => Ok(Self::OpenAi(OpenAiProvider::new(model, base_url)?)),
             "ollama" => Ok(Self::Ollama(OllamaProvider::new(model, base_url)?)),
+            "codex" if base_url.is_none() => Ok(Self::Codex(CodexProvider::new(model)?)),
+            "codex" => Err(EngineError::Provider(
+                "Codex does not use a base URL".to_owned(),
+            )),
             _ => Err(EngineError::Provider(format!("unknown provider `{kind}`"))),
         }
     }
@@ -33,6 +44,7 @@ impl AiProvider for ConfiguredProvider {
             Self::Mock(provider) => provider.id(),
             Self::OpenAi(provider) => provider.id(),
             Self::Ollama(provider) => provider.id(),
+            Self::Codex(provider) => provider.id(),
         }
     }
 
@@ -41,6 +53,7 @@ impl AiProvider for ConfiguredProvider {
             Self::Mock(provider) => provider.is_remote(),
             Self::OpenAi(provider) => provider.is_remote(),
             Self::Ollama(provider) => provider.is_remote(),
+            Self::Codex(provider) => provider.is_remote(),
         }
     }
 
@@ -49,6 +62,7 @@ impl AiProvider for ConfiguredProvider {
             Self::Mock(provider) => provider.complete(request).await,
             Self::OpenAi(provider) => provider.complete(request).await,
             Self::Ollama(provider) => provider.complete(request).await,
+            Self::Codex(provider) => provider.complete(request).await,
         }
     }
 }
@@ -202,6 +216,186 @@ impl AiProvider for OllamaProvider {
             model: body.get("model").and_then(Value::as_str).map(str::to_owned),
             content: content.to_owned(),
         })
+    }
+}
+
+/// Runs a local Codex CLI signed in with ChatGPT. The CLI manages its own session;
+/// PTConductor never reads or copies its cached credentials.
+#[derive(Clone)]
+pub struct CodexProvider {
+    model: String,
+    executable: PathBuf,
+}
+
+impl CodexProvider {
+    pub fn new(model: &str) -> Result<Self, EngineError> {
+        Ok(Self {
+            model: validated_model(model)?,
+            executable: PathBuf::from("codex"),
+        })
+    }
+
+    async fn check_chatgpt_login(&self) -> Result<(), EngineError> {
+        let status = timeout(
+            Duration::from_secs(15),
+            Command::new(&self.executable)
+                .args(["login", "status"])
+                .env_remove("OPENAI_API_KEY")
+                .env_remove("CODEX_API_KEY")
+                .kill_on_drop(true)
+                .output(),
+        )
+        .await
+        .map_err(|_| EngineError::Provider("Codex login check timed out".to_owned()))?
+        .map_err(|_| {
+            EngineError::Provider(
+                "Codex CLI not found; install it and run `codex login`".to_owned(),
+            )
+        })?;
+        let details = format!(
+            "{} {}",
+            String::from_utf8_lossy(&status.stdout),
+            String::from_utf8_lossy(&status.stderr)
+        );
+        let details = details.to_ascii_lowercase();
+        if !status.status.success()
+            || !details.contains("chatgpt")
+            || details.contains("api key")
+            || details.contains("api-key")
+            || details.contains("apikey")
+        {
+            return Err(EngineError::Provider(
+                "Codex must be signed in with ChatGPT, not an API key; run `codex login status` and `codex login`".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl AiProvider for CodexProvider {
+    fn id(&self) -> &str {
+        "codex"
+    }
+
+    fn is_remote(&self) -> bool {
+        true
+    }
+
+    async fn complete(&self, request: AiRequest) -> Result<AiResponse, EngineError> {
+        let instruction = if request.output_format == OutputFormat::Json {
+            "Return only one valid JSON object. Do not use tools, execute commands, or access files.\n\n"
+        } else {
+            "Do not use tools, execute commands, or access files. Answer using only the supplied prompt.\n\n"
+        };
+        let prompt = format!("{instruction}{}", request.prompt);
+        if prompt.len() > 256 * 1024 {
+            return Err(EngineError::Provider(
+                "Codex prompt exceeds 256 KiB".to_owned(),
+            ));
+        }
+        self.check_chatgpt_login().await?;
+        let working_dir = CodexWorkingDirectory::new()?;
+        let content = timeout(
+            Duration::from_secs(240),
+            self.invoke(&working_dir.0, &prompt),
+        )
+        .await
+        .map_err(|_| EngineError::Provider("Codex run timed out".to_owned()))??;
+        Ok(AiResponse {
+            provider: self.id().to_owned(),
+            model: Some(self.model.clone()),
+            content,
+        })
+    }
+}
+
+impl CodexProvider {
+    async fn invoke(&self, working_dir: &PathBuf, prompt: &str) -> Result<String, EngineError> {
+        let mut child = Command::new(&self.executable)
+            .args(["--ask-for-approval", "never", "exec"])
+            .args([
+                "--sandbox",
+                "read-only",
+                "--ephemeral",
+                "--ignore-user-config",
+                "--skip-git-repo-check",
+                "--model",
+                &self.model,
+                "-",
+            ])
+            .current_dir(working_dir)
+            .env_remove("OPENAI_API_KEY")
+            .env_remove("CODEX_API_KEY")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|_| EngineError::Provider("could not launch Codex CLI".to_owned()))?;
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| EngineError::Provider("could not open Codex prompt input".to_owned()))?;
+        stdin
+            .write_all(prompt.as_bytes())
+            .await
+            .map_err(|_| EngineError::Provider("could not send prompt to Codex CLI".to_owned()))?;
+        drop(stdin);
+        let mut output = Vec::new();
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| EngineError::Provider("could not read Codex output".to_owned()))?;
+        stdout
+            .take(1024 * 1024 + 1)
+            .read_to_end(&mut output)
+            .await
+            .map_err(|_| EngineError::Provider("could not read Codex output".to_owned()))?;
+        if output.len() > 1024 * 1024 {
+            return Err(EngineError::Provider(
+                "Codex output exceeds 1 MiB".to_owned(),
+            ));
+        }
+        let status = child
+            .wait()
+            .await
+            .map_err(|_| EngineError::Provider("Codex CLI process failed".to_owned()))?;
+        if !status.success() {
+            return Err(EngineError::Provider(
+                "Codex run failed; check your ChatGPT login and Codex usage limits".to_owned(),
+            ));
+        }
+        let content = String::from_utf8(output)
+            .map_err(|_| EngineError::Provider("Codex output was not UTF-8".to_owned()))?;
+        if content.trim().is_empty() {
+            return Err(EngineError::Provider("Codex returned no output".to_owned()));
+        }
+        Ok(content)
+    }
+}
+
+struct CodexWorkingDirectory(PathBuf);
+
+impl CodexWorkingDirectory {
+    fn new() -> Result<Self, EngineError> {
+        let path = std::env::temp_dir().join(format!("ptconductor-codex-{}", Uuid::new_v4()));
+        let mut builder = fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        builder.create(&path).map_err(|_| {
+            EngineError::Provider("could not create isolated Codex working directory".to_owned())
+        })?;
+        Ok(Self(path))
+    }
+}
+
+impl Drop for CodexWorkingDirectory {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
     }
 }
 
@@ -421,5 +615,63 @@ mod tests {
                 .is_err()
         );
         assert!(OllamaProvider::new("test", Some("http://example.com/")).is_err());
+        assert!(
+            ConfiguredProvider::new("codex", "gpt-6-sol", Some("https://example.com")).is_err()
+        );
+    }
+
+    #[cfg(unix)]
+    fn fake_codex(login_message: &str) -> (CodexWorkingDirectory, CodexProvider) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let fixture = CodexWorkingDirectory::new().unwrap();
+        let executable = fixture.0.join("codex");
+        let script = format!(
+            "#!/bin/sh\nif [ \"$1\" = login ]; then\n  printf '%s\\n' '{login_message}'\n  exit 0\nfi\nprintf '%s\\n' \"$@\" > \"{args}\"\ncat > \"{prompt}\"\nprintf '%s\\n' '{{\"technologies\":[]}}'\n",
+            args = fixture.0.join("args").display(),
+            prompt = fixture.0.join("prompt").display(),
+        );
+        fs::write(&executable, script).unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        (
+            fixture,
+            CodexProvider {
+                model: "gpt-6-sol".to_owned(),
+                executable,
+            },
+        )
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn codex_uses_chatgpt_login_and_passes_prompt_via_stdin() {
+        let (fixture, provider) = fake_codex("Logged in using ChatGPT");
+        let response = provider.complete(request()).await.unwrap();
+        assert_eq!(response.provider, "codex");
+        assert_eq!(response.model.as_deref(), Some("gpt-6-sol"));
+        assert_eq!(response.content.trim(), r#"{"technologies":[]}"#);
+        let args = fs::read_to_string(fixture.0.join("args")).unwrap();
+        for required in [
+            "read-only",
+            "never",
+            "--ephemeral",
+            "--ignore-user-config",
+            "-",
+        ] {
+            assert!(args.lines().any(|argument| argument == required));
+        }
+        assert!(!args.contains("Return JSON observations"));
+        let prompt = fs::read_to_string(fixture.0.join("prompt")).unwrap();
+        assert!(prompt.contains("Return only one valid JSON object"));
+        assert!(prompt.contains("Return JSON observations"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn codex_rejects_api_key_authentication() {
+        let (fixture, provider) = fake_codex("Logged in using an API key");
+        let error = provider.complete(request()).await.unwrap_err().to_string();
+        assert!(error.contains("signed in with ChatGPT"));
+        assert!(!fixture.0.join("args").exists());
     }
 }

@@ -26,7 +26,7 @@ Workflow validation, typed input resolution, template rendering, provider invoca
 
 ### `ptc-providers`
 
-Built-in `AiProvider` implementations for deterministic mock, local Ollama, and OpenAI-compatible HTTP APIs. JSON workflow steps request provider JSON mode, and the engine validates the returned JSON object before storing it.
+Built-in `AiProvider` implementations for deterministic mock, local Ollama, OpenAI-compatible HTTP APIs, and a ChatGPT-authenticated local Codex CLI. JSON workflow steps request JSON output, and the engine validates the returned JSON object before storing it. The Codex adapter uses a read-only, non-interactive CLI invocation with an empty temporary working directory and sends prompts through stdin.
 
 ### `ptc-persistence`
 

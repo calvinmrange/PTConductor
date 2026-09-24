@@ -1,6 +1,6 @@
 # Testing PTConductor on Kali Linux
 
-These steps exercise the Week 4 workflow loader, schema validation, generated GUI fields, and CLI input handling. The sample workflows are inert: preparation does not make a provider or network request, and the current `mock` provider returns deterministic output.
+These steps exercise the workflow loader, schema validation, generated GUI fields, and CLI input handling. Preparation does not make a provider or network request, and the `mock` provider returns deterministic output. For a Codex test using a ChatGPT sign-in, see [codex-kali.md](codex-kali.md).
 
 ## 1. Install build prerequisites
 
@@ -43,7 +43,7 @@ cargo run -p ptconductor-cli -- workflow validate \
   workflows/examples/web-endpoint-review.json
 ```
 
-The list should contain both `web-endpoint-review` and `typed-input-demo`. Validation should print the workflow version and a `sha256:` content hash.
+The list should include `web-endpoint-review`, `typed-input-demo`, and `technology-fingerprint`. Validation should print the workflow version and a `sha256:` content hash.
 
 ## 4. Test typed inputs and secret redaction
 

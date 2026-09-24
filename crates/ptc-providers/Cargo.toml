@@ -11,6 +11,5 @@ ptc-domain = { path = "../ptc-domain" }
 ptc-engine = { path = "../ptc-engine" }
 reqwest.workspace = true
 serde_json.workspace = true
-
-[dev-dependencies]
 tokio.workspace = true
+uuid.workspace = true
