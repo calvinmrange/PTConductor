@@ -17,7 +17,7 @@ cargo run -p ptconductor-cli -- prepare workflows/examples/technology-fingerprin
   --input 'HTML=<html><title>Test</title></html>'
 
 cargo run -p ptconductor-cli -- run workflows/examples/technology-fingerprint.json \
-  --provider openai --model gpt-4o-mini --allow-remote \
+  --provider openai --model gpt-6-luna --allow-remote \
   --input TARGET=https://example.test \
   --input 'HEADERS=Server: nginx' \
   --input 'HTML=<html><title>Test</title></html>' \

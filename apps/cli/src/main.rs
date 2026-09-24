@@ -198,7 +198,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let loaded = load_workflow_file(workflow)?;
             let values = parse_inputs(inputs)?;
             let model = model.unwrap_or_else(|| match provider.as_str() {
-                "openai" => "gpt-4o-mini".to_owned(),
+                "openai" => "gpt-6-luna".to_owned(),
                 "ollama" => "llama3.2".to_owned(),
                 _ => "mock".to_owned(),
             });

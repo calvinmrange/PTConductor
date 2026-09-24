@@ -108,7 +108,7 @@ export function App() {
   const [busy, setBusy] = useState(true);
   const [creating, setCreating] = useState(false);
   const [provider, setProvider] = useState<"openai" | "ollama" | "mock">("openai");
-  const [model, setModel] = useState("gpt-4o-mini");
+  const [model, setModel] = useState("gpt-6-luna");
   const [allowRemote, setAllowRemote] = useState(false);
   const [run, setRun] = useState<RunRecord | null>(null);
 
@@ -288,7 +288,7 @@ export function App() {
                   <select value={provider} onChange={(event) => {
                     const next = event.target.value as typeof provider;
                     setProvider(next);
-                    setModel(next === "openai" ? "gpt-4o-mini" : next === "ollama" ? "llama3.2" : "mock");
+                    setModel(next === "openai" ? "gpt-6-luna" : next === "ollama" ? "llama3.2" : "mock");
                     setAllowRemote(false);
                     setRun(null);
                   }}><option value="openai">OpenAI-compatible</option><option value="ollama">Ollama (local)</option><option value="mock">Mock (offline)</option></select>
