@@ -6,7 +6,7 @@ use ptc_domain::{
     WORKFLOW_SCHEMA_VERSION,
 };
 use ptc_engine::{prepare_workflow, RunRepository, WorkflowEngine};
-use ptc_persistence::{load_workflow_file, FileWorkflowRepository, JsonRunRepository};
+use ptc_persistence::{load_workflow_file, FileWorkflowRepository, IndexedRunRepository};
 use ptc_providers::ConfiguredProvider;
 use ptc_reporting::{MarkdownRenderer, ReportRenderer};
 use serde_json::Value;
@@ -58,6 +58,12 @@ enum Command {
     },
     Show {
         run_id: Uuid,
+    },
+    History {
+        #[arg(long, default_value_t = 50)]
+        limit: u32,
+        #[arg(long)]
+        json: bool,
     },
     Report {
         run_id: Uuid,
@@ -204,7 +210,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 _ => "mock".to_owned(),
             });
             let provider = ConfiguredProvider::new(&provider, &model, base_url.as_deref())?;
-            let engine = WorkflowEngine::new(provider, JsonRunRepository::new(cli.runs_dir));
+            let repository = IndexedRunRepository::open(cli.runs_dir).await?;
+            let engine = WorkflowEngine::new(provider, repository);
             let run = engine
                 .execute(&loaded.definition, values, loaded.content_hash)
                 .await?;
@@ -228,18 +235,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("{}", serde_json::to_string_pretty(&prepared)?);
         }
         Command::Show { run_id } => {
-            let repository = JsonRunRepository::new(cli.runs_dir);
+            let repository = IndexedRunRepository::open(cli.runs_dir).await?;
             let run = repository
                 .get(run_id)
                 .await?
                 .ok_or_else(|| format!("run not found: {run_id}"))?;
             println!("{}", serde_json::to_string_pretty(&run)?);
         }
+        Command::History { limit, json } => {
+            let repository = IndexedRunRepository::open(cli.runs_dir).await?;
+            let runs = repository.list(limit).await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&runs)?);
+            } else {
+                for run in runs {
+                    println!(
+                        "{}\t{}\t{}\t{}\t{}\t{}",
+                        run.id,
+                        run.started_at,
+                        serde_json::to_value(run.status)?
+                            .as_str()
+                            .unwrap_or_default(),
+                        run.workflow_id,
+                        run.provider.as_deref().unwrap_or("—"),
+                        run.model.as_deref().unwrap_or("—")
+                    );
+                }
+            }
+        }
         Command::Report { run_id, format } => {
             if format != "markdown" {
                 return Err(format!("report format `{format}` is not implemented yet").into());
             }
-            let repository = JsonRunRepository::new(cli.runs_dir);
+            let repository = IndexedRunRepository::open(cli.runs_dir).await?;
             let run = repository
                 .get(run_id)
                 .await?

@@ -63,7 +63,23 @@ type DraftField = Pick<InputDefinition, "name" | "label" | "type" | "required">;
 type RunRecord = {
   id: string;
   status: string;
+  workflow: { id: string; version: string };
+  startedAt: string;
+  completedAt?: string;
+  inputs: Record<string, JsonValue>;
   steps: Array<{ id: string; status: string; provider: string; model?: string; output: string; error?: string }>;
+};
+
+type RunSummary = {
+  id: string;
+  workflowId: string;
+  workflowVersion: string;
+  status: string;
+  startedAt: string;
+  completedAt?: string;
+  provider?: string;
+  model?: string;
+  inputs: Record<string, JsonValue>;
 };
 
 const schemaVersion = "ptconductor.dev/workflow/v1alpha1";
@@ -111,6 +127,32 @@ export function App() {
   const [model, setModel] = useState("gpt-6-sol");
   const [allowRemote, setAllowRemote] = useState(false);
   const [run, setRun] = useState<RunRecord | null>(null);
+  const [view, setView] = useState<"workflow" | "history">("workflow");
+  const [history, setHistory] = useState<RunSummary[]>([]);
+  const [historyRun, setHistoryRun] = useState<RunRecord | null>(null);
+  const [statusFilter, setStatusFilter] = useState("");
+  const [providerFilter, setProviderFilter] = useState("");
+
+  async function openHistory() {
+    setView("history");
+    setError("");
+    if (!isTauri()) return;
+    setBusy(true);
+    try { setHistory(await invoke<RunSummary[]>("list_runs")); }
+    catch (cause) { setError(String(cause)); }
+    finally { setBusy(false); }
+  }
+
+  async function openRun(id: string) {
+    setError("");
+    setBusy(true);
+    try {
+      const result = await invoke<RunRecord | null>("get_run", { runId: id });
+      if (!result) throw new Error(`Run ${id} was not found`);
+      setHistoryRun(result);
+    } catch (cause) { setError(String(cause)); }
+    finally { setBusy(false); }
+  }
 
   async function refresh(preferredPath?: string) {
     const list = isTauri() ? await invoke<WorkflowSummary[]>("list_workflows") : [summaryOf(demoWorkflow)];
@@ -193,6 +235,7 @@ export function App() {
         allowRemote,
       });
       setRun(result);
+      setHistoryRun(result);
     } catch (cause) {
       setError(String(cause));
     } finally {
@@ -208,6 +251,10 @@ export function App() {
           <strong>PTConductor</strong>
           <span>Workflow studio</span>
         </div>
+        <nav className="main-nav" aria-label="Main view">
+          <button className={view === "workflow" ? "active" : ""} onClick={() => setView("workflow")}>Workflows</button>
+          <button className={view === "history" ? "active" : ""} onClick={openHistory}>Run history</button>
+        </nav>
         <div className="engine-status"><i />{isTauri() ? "Local engine" : "Browser preview"}</div>
       </header>
 
@@ -234,7 +281,32 @@ export function App() {
       </aside>
 
       <section className="workspace">
-        {creating ? (
+        {view === "history" ? (
+          <div className="history-view">
+            <div className="workflow-header"><div><span className="eyebrow">LOCAL RUNS</span><h2>Run history</h2><p>JSON artifacts are indexed locally. Open a run to review its result and redacted inputs.</p></div>
+              <button className="secondary" onClick={openHistory} disabled={busy}>Refresh</button></div>
+            <div className="history-filters">
+              <label className="field"><span className="field-label">Status</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="">All statuses</option><option value="completed">Completed</option><option value="failed">Failed</option><option value="running">Running</option></select></label>
+              <label className="field"><span className="field-label">Provider</span><select value={providerFilter} onChange={(event) => setProviderFilter(event.target.value)}><option value="">All providers</option>{Array.from(new Set(history.map((item) => item.provider).filter((item): item is string => Boolean(item)))).map((name) => <option key={name} value={name}>{name}</option>)}</select></label>
+            </div>
+            {error && <div className="error" role="alert">{error}</div>}
+            {!isTauri() && <p className="remote-notice">Open the Tauri desktop app to view locally stored runs.</p>}
+            <div className="history-list">
+              {history.filter((item) => (!statusFilter || item.status === statusFilter) && (!providerFilter || item.provider === providerFilter)).map((item) => (
+                <button key={item.id} className={historyRun?.id === item.id ? "history-item active" : "history-item"} onClick={() => openRun(item.id)}>
+                  <span><strong>{item.workflowId}</strong><small>{new Date(item.startedAt).toLocaleString()} · {item.id}</small></span>
+                  <span className="history-meta">{item.provider || "Pending"}{item.model ? ` / ${item.model}` : ""}<b>{item.status}</b></span>
+                </button>
+              ))}
+              {!busy && isTauri() && history.length === 0 && <p className="empty">No runs saved yet.</p>}
+            </div>
+            {historyRun && <section className="preview-panel">
+              <div className="form-title"><span>RUN</span><div><h3>{historyRun.workflow.id} · {historyRun.status}</h3><p>{historyRun.id} · started {new Date(historyRun.startedAt).toLocaleString()}{historyRun.completedAt ? ` · finished ${new Date(historyRun.completedAt).toLocaleString()}` : ""}</p></div></div>
+              <h4>Redacted inputs</h4><pre>{JSON.stringify(historyRun.inputs, null, 2)}</pre>
+              {historyRun.steps.map((step) => <div key={step.id}><h4>{step.id} · {step.provider}{step.model ? ` / ${step.model}` : ""} · {step.status}</h4><pre>{step.output || step.error || "No output yet"}</pre></div>)}
+            </section>}
+          </div>
+        ) : creating ? (
           <WorkflowCreator
             onCancel={() => setCreating(false)}
             onCreated={async (document) => {

@@ -30,7 +30,7 @@ Built-in `AiProvider` implementations for deterministic mock, local Ollama, Open
 
 ### `ptc-persistence`
 
-Portable workflow loading and immutable JSON run artifacts. SQLite will index workflows, configuration, and run history without replacing the portable artifacts.
+Portable workflow loading and JSON run artifacts, plus a SQLite index for run history. The adapter writes the JSON record before updating the index and imports existing artifacts at startup. The CLI and desktop use this same repository; the index contains only redacted run metadata.
 
 ### `ptc-reporting`
 
@@ -41,7 +41,7 @@ Deterministic transformations from stored runs to Markdown and HTML. A report mu
 - `schemaVersion` selects the parser and migration path.
 - Workflow `id` is stable; `version` changes with behavior.
 - Every run retains its workflow version and SHA-256 content hash.
-- Completed run artifacts are immutable.
+- Runs update their JSON artifact as steps and status change; the final record captures the completed state.
 - Unknown fields fail validation in v1alpha1.
 - New step kinds are added as tagged enum variants and executor adapters.
 

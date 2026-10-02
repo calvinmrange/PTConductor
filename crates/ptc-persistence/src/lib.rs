@@ -4,9 +4,14 @@ use std::{
 };
 
 use async_trait::async_trait;
-use ptc_domain::{RunRecord, WorkflowDefinition};
+use ptc_domain::{RunRecord, RunStatus, WorkflowDefinition};
 use ptc_engine::{validate_workflow, EngineError, RunRepository, WorkflowRepository};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use sqlx::{
+    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool},
+    Row,
+};
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
@@ -137,6 +142,122 @@ impl RunRepository for JsonRunRepository {
     }
 }
 
+/// The JSON artifact is authoritative; SQLite keeps searchable, redacted metadata.
+#[derive(Debug, Clone)]
+pub struct IndexedRunRepository {
+    artifacts: JsonRunRepository,
+    pool: SqlitePool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunSummary {
+    pub id: Uuid,
+    pub workflow_id: String,
+    pub workflow_version: String,
+    pub status: RunStatus,
+    pub started_at: chrono::DateTime<chrono::Utc>,
+    pub completed_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub inputs: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+impl From<&RunRecord> for RunSummary {
+    fn from(run: &RunRecord) -> Self {
+        let step = run.steps.last();
+        Self {
+            id: run.id,
+            workflow_id: run.workflow.id.clone(),
+            workflow_version: run.workflow.version.clone(),
+            status: run.status,
+            started_at: run.started_at,
+            completed_at: run.completed_at,
+            provider: step.map(|step| step.provider.clone()),
+            model: step.and_then(|step| step.model.clone()),
+            inputs: run.inputs.clone(),
+        }
+    }
+}
+
+impl IndexedRunRepository {
+    pub async fn open(root: impl Into<PathBuf>) -> Result<Self, EngineError> {
+        let root = root.into();
+        fs::create_dir_all(&root).map_err(repository_error)?;
+        let options = SqliteConnectOptions::new()
+            .filename(root.join("index.sqlite"))
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal);
+        let pool = SqlitePool::connect_with(options)
+            .await
+            .map_err(repository_error)?;
+        sqlx::query("CREATE TABLE IF NOT EXISTS run_index (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, status TEXT NOT NULL, provider TEXT, started_at TEXT NOT NULL, summary TEXT NOT NULL)")
+            .execute(&pool).await.map_err(repository_error)?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_run_started ON run_index(started_at DESC)")
+            .execute(&pool)
+            .await
+            .map_err(repository_error)?;
+        let repository = Self {
+            artifacts: JsonRunRepository::new(&root),
+            pool,
+        };
+        // Import runs created before the index existed, including old Codex runs.
+        for entry in fs::read_dir(&root).map_err(repository_error)? {
+            let path = entry.map_err(repository_error)?.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                continue;
+            }
+            let contents = fs::read(&path).map_err(repository_error)?;
+            let run: RunRecord = serde_json::from_slice(&contents)
+                .map_err(|error| EngineError::Repository(format!("{}: {error}", path.display())))?;
+            repository.index(&run).await?;
+        }
+        Ok(repository)
+    }
+
+    async fn index(&self, run: &RunRecord) -> Result<(), EngineError> {
+        let summary = RunSummary::from(run);
+        let serialized = serde_json::to_string(&summary).map_err(repository_error)?;
+        let status = serde_json::to_value(run.status).map_err(repository_error)?;
+        sqlx::query("INSERT INTO run_index(id, workflow_id, status, provider, started_at, summary) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET workflow_id=excluded.workflow_id, status=excluded.status, provider=excluded.provider, started_at=excluded.started_at, summary=excluded.summary")
+            .bind(run.id.to_string())
+            .bind(&run.workflow.id)
+            .bind(status.as_str().unwrap_or_default())
+            .bind(&summary.provider)
+            .bind(run.started_at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true))
+            .bind(serialized)
+            .execute(&self.pool).await.map_err(repository_error)?;
+        Ok(())
+    }
+
+    pub async fn list(&self, limit: u32) -> Result<Vec<RunSummary>, EngineError> {
+        let rows =
+            sqlx::query("SELECT summary FROM run_index ORDER BY started_at DESC, id DESC LIMIT ?")
+                .bind(i64::from(limit.min(500)))
+                .fetch_all(&self.pool)
+                .await
+                .map_err(repository_error)?;
+        rows.into_iter()
+            .map(|row| {
+                let serialized: String = row.try_get("summary").map_err(repository_error)?;
+                serde_json::from_str(&serialized).map_err(repository_error)
+            })
+            .collect()
+    }
+}
+
+#[async_trait]
+impl RunRepository for IndexedRunRepository {
+    async fn save(&self, run: &RunRecord) -> Result<(), EngineError> {
+        self.artifacts.save(run).await?;
+        self.index(run).await
+    }
+
+    async fn get(&self, id: Uuid) -> Result<Option<RunRecord>, EngineError> {
+        self.artifacts.get(id).await
+    }
+}
+
 fn repository_error(error: impl std::fmt::Display) -> EngineError {
     EngineError::Repository(error.to_string())
 }
@@ -157,7 +278,10 @@ fn collect_json_files(root: &Path, paths: &mut Vec<PathBuf>) -> Result<(), Engin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ptc_domain::{OutputFormat, StepDefinition, WORKFLOW_SCHEMA_VERSION};
+    use ptc_domain::{
+        OutputFormat, StepDefinition, StepRun, WorkflowReference, RUN_SCHEMA_VERSION,
+        WORKFLOW_SCHEMA_VERSION,
+    };
 
     fn workflow() -> WorkflowDefinition {
         WorkflowDefinition {
@@ -185,6 +309,66 @@ mod tests {
         assert_eq!(loaded.definition.id, "created-workflow");
         assert!(loaded.content_hash.starts_with("sha256:"));
         assert!(save_workflow_file(&root, &workflow()).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn indexes_existing_and_updated_codex_runs_without_unredacting_inputs() {
+        let root = std::env::temp_dir().join(format!("ptc-run-index-{}", Uuid::new_v4()));
+        let now = chrono::Utc::now();
+        let mut run = RunRecord {
+            schema_version: RUN_SCHEMA_VERSION.to_owned(),
+            id: Uuid::new_v4(),
+            workflow: WorkflowReference {
+                id: "tech-analysis".to_owned(),
+                version: "1.0.0".to_owned(),
+                content_hash: "sha256:test".to_owned(),
+            },
+            status: RunStatus::Running,
+            started_at: now,
+            completed_at: None,
+            inputs: [("TOKEN".to_owned(), serde_json::json!("[REDACTED]"))].into(),
+            steps: Vec::new(),
+            findings: Vec::new(),
+        };
+        JsonRunRepository::new(&root).save(&run).await.unwrap();
+        let repository = IndexedRunRepository::open(&root).await.unwrap();
+        assert_eq!(
+            repository.list(10).await.unwrap()[0].status,
+            RunStatus::Running
+        );
+        run.status = RunStatus::Completed;
+        run.completed_at = Some(now);
+        run.steps.push(StepRun {
+            id: "analyze".to_owned(),
+            status: RunStatus::Completed,
+            started_at: now,
+            completed_at: Some(now),
+            provider: "codex".to_owned(),
+            model: Some("gpt-6-sol".to_owned()),
+            output: "{\"technologies\":[]}".to_owned(),
+            error: None,
+        });
+        repository.save(&run).await.unwrap();
+        let summary = repository.list(10).await.unwrap().remove(0);
+        assert_eq!(summary.provider.as_deref(), Some("codex"));
+        assert_eq!(summary.status, RunStatus::Completed);
+        assert_eq!(summary.inputs["TOKEN"], "[REDACTED]");
+        assert_eq!(
+            repository.get(run.id).await.unwrap().unwrap().steps[0].output,
+            "{\"technologies\":[]}"
+        );
+        drop(repository);
+        assert_eq!(
+            IndexedRunRepository::open(&root)
+                .await
+                .unwrap()
+                .list(10)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
         fs::remove_dir_all(root).unwrap();
     }
 }

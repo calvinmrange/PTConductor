@@ -20,3 +20,4 @@ ptc-providers = { path = "../../../crates/ptc-providers" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2", features = [] }
+uuid = { version = "1", features = ["serde"] }

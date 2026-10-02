@@ -56,6 +56,19 @@ cargo run -p ptconductor-cli -- workflow create \
 
 `prepare` validates inputs and prints a redacted prompt preview without calling a provider. The deterministic mock provider lets the full engine run without credentials.
 
+## Run history
+
+Every run is stored as `runs/<run-id>.json`. The shared persistence adapter indexes run metadata in `runs/index.sqlite`, including status, timestamps, workflow, provider, model, and redacted inputs. Existing JSON artifacts, including Codex runs, are imported when the store opens.
+
+```bash
+cargo run -p ptconductor-cli -- history
+cargo run -p ptconductor-cli -- history --limit 20 --json
+cargo run -p ptconductor-cli -- show <run-id>
+cargo run -p ptconductor-cli -- report <run-id>
+```
+
+In the desktop app, select **Run history** to filter by status or provider, open a run, and inspect its saved output and redacted inputs. Failed runs appear there even when the original `run` command returned an error. The SQLite index can be recreated from JSON artifacts; keep those artifacts when moving runs between machines. The index contains no unredacted secret input values.
+
 ## AI provider execution
 
 `technology-fingerprint.json` asks for an interpretation of observations you paste, not an active scan. The CLI and desktop use the same provider adapters.

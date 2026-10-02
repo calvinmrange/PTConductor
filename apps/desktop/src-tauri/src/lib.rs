@@ -2,13 +2,14 @@ use std::{collections::BTreeMap, env, path::PathBuf};
 
 use ptc_domain::RunRecord;
 use ptc_domain::WorkflowDefinition;
-use ptc_engine::{prepare_workflow as prepare_definition, PreparedWorkflow, WorkflowEngine};
+use ptc_engine::{prepare_workflow as prepare_definition, PreparedWorkflow, RunRepository, WorkflowEngine};
 use ptc_persistence::{
-    load_workflow_file, FileWorkflowRepository, JsonRunRepository, LoadedWorkflow,
+    load_workflow_file, FileWorkflowRepository, IndexedRunRepository, LoadedWorkflow, RunSummary,
 };
 use ptc_providers::ConfiguredProvider;
 use serde::Serialize;
 use serde_json::Value;
+use uuid::Uuid;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -126,11 +127,24 @@ async fn run_workflow(
     };
     let configured = ConfiguredProvider::new(&provider, &model, base_url.as_deref())
         .map_err(|error| error.to_string())?;
-    let engine = WorkflowEngine::new(configured, JsonRunRepository::new(run_root()));
+    let repository = IndexedRunRepository::open(run_root()).await.map_err(|error| error.to_string())?;
+    let engine = WorkflowEngine::new(configured, repository);
     engine
         .execute(&loaded.definition, values, loaded.content_hash)
         .await
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn list_runs() -> Result<Vec<RunSummary>, String> {
+    let repository = IndexedRunRepository::open(run_root()).await.map_err(|error| error.to_string())?;
+    repository.list(100).await.map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn get_run(run_id: Uuid) -> Result<Option<RunRecord>, String> {
+    let repository = IndexedRunRepository::open(run_root()).await.map_err(|error| error.to_string())?;
+    repository.get(run_id).await.map_err(|error| error.to_string())
 }
 
 fn run_root() -> PathBuf {
@@ -169,7 +183,9 @@ pub fn run() {
             load_workflow,
             prepare_workflow,
             create_workflow,
-            run_workflow
+            run_workflow,
+            list_runs,
+            get_run
         ])
         .run(tauri::generate_context!())
         .expect("failed to run PTConductor");
