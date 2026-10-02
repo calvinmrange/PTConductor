@@ -207,6 +207,15 @@ impl IndexedRunRepository {
             if path.extension().and_then(|value| value.to_str()) != Some("json") {
                 continue;
             }
+            // CLI --output-json exports can share this directory but are not run artifacts.
+            if path
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .and_then(|value| Uuid::parse_str(value).ok())
+                .is_none()
+            {
+                continue;
+            }
             let contents = fs::read(&path).map_err(repository_error)?;
             let run: RunRecord = serde_json::from_slice(&contents)
                 .map_err(|error| EngineError::Repository(format!("{}: {error}", path.display())))?;
@@ -332,6 +341,7 @@ mod tests {
             findings: Vec::new(),
         };
         JsonRunRepository::new(&root).save(&run).await.unwrap();
+        fs::write(root.join("technology-result.json"), b"{\"technologies\":[]}").unwrap();
         let repository = IndexedRunRepository::open(&root).await.unwrap();
         assert_eq!(
             repository.list(10).await.unwrap()[0].status,
