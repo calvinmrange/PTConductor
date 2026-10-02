@@ -341,7 +341,11 @@ mod tests {
             findings: Vec::new(),
         };
         JsonRunRepository::new(&root).save(&run).await.unwrap();
-        fs::write(root.join("technology-result.json"), b"{\"technologies\":[]}").unwrap();
+        fs::write(
+            root.join("technology-result.json"),
+            b"{\"technologies\":[]}",
+        )
+        .unwrap();
         let repository = IndexedRunRepository::open(&root).await.unwrap();
         assert_eq!(
             repository.list(10).await.unwrap()[0].status,
