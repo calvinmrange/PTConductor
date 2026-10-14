@@ -61,7 +61,7 @@ jobs:
         working-directory: apps/desktop
         run: |
           npm ci
-          npm run tauri build -- --bundles deb
+          npm run tauri build -- --bundles deb -- --locked
       - uses: actions/upload-artifact@v4
         with:
           name: ptconductor-linux-desktop
