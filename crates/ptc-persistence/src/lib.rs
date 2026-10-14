@@ -78,7 +78,13 @@ pub fn save_workflow_file(
         )));
     }
     let contents = serde_json::to_vec_pretty(workflow).map_err(repository_error)?;
-    fs::write(&path, &contents).map_err(repository_error)?;
+    use std::io::Write;
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .and_then(|mut file| file.write_all(&contents))
+        .map_err(repository_error)?;
     Ok(LoadedWorkflow {
         path,
         definition: workflow.clone(),
@@ -123,10 +129,20 @@ impl RunRepository for JsonRunRepository {
         let destination = self.path_for(run.id);
         let temporary = destination.with_extension("json.tmp");
         let contents = serde_json::to_vec_pretty(run).map_err(repository_error)?;
-        fs::write(&temporary, contents).map_err(repository_error)?;
-        if destination.exists() {
-            fs::remove_file(&destination).map_err(repository_error)?;
+        use std::io::Write;
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
         }
+        let temporary = temporary.with_extension(format!("{}.tmp", Uuid::new_v4()));
+        let mut file = options.open(&temporary).map_err(repository_error)?;
+        file.write_all(&contents)
+            .and_then(|_| file.sync_all())
+            .map_err(repository_error)?;
+        drop(file);
         fs::rename(temporary, destination).map_err(repository_error)
     }
 
@@ -217,9 +233,21 @@ impl IndexedRunRepository {
                 continue;
             }
             let contents = fs::read(&path).map_err(repository_error)?;
-            let run: RunRecord = serde_json::from_slice(&contents)
-                .map_err(|error| EngineError::Repository(format!("{}: {error}", path.display())))?;
-            repository.index(&run).await?;
+            match serde_json::from_slice::<RunRecord>(&contents) {
+                Ok(run)
+                    if path.file_stem().and_then(|v| v.to_str())
+                        == Some(run.id.to_string().as_str())
+                        && run.schema_version == ptc_domain::RUN_SCHEMA_VERSION =>
+                {
+                    repository.index(&run).await?
+                }
+                _ => {
+                    eprintln!(
+                        "Warning: skipped invalid run artifact {} (file preserved)",
+                        path.display()
+                    );
+                }
+            }
         }
         Ok(repository)
     }

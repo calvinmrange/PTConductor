@@ -24,7 +24,18 @@
     }
   },
   "bundle": {
-    "active": false
+    "active": true,
+    "targets": [
+      "deb",
+      "appimage"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.png"
+    ],
+    "category": "DeveloperTool",
+    "shortDescription": "Local pentest workflows with Codex summaries"
   }
 }
-

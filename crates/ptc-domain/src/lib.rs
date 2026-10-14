@@ -60,6 +60,17 @@ pub enum OutputFormat {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum StepDefinition {
+    NmapScan {
+        id: String,
+        name: String,
+        target: String,
+        ports: String,
+    },
+    HttpHeaders {
+        id: String,
+        name: String,
+        target: String,
+    },
     AiPrompt {
         id: String,
         name: String,
@@ -72,9 +83,22 @@ pub enum StepDefinition {
 }
 
 impl StepDefinition {
+    pub fn name(&self) -> &str {
+        match self {
+            Self::AiPrompt { name, .. }
+            | Self::NmapScan { name, .. }
+            | Self::HttpHeaders { name, .. } => name,
+        }
+    }
+    pub fn is_active(&self) -> bool {
+        !matches!(self, Self::AiPrompt { .. })
+    }
+
     pub fn id(&self) -> &str {
         match self {
-            Self::AiPrompt { id, .. } => id,
+            Self::AiPrompt { id, .. }
+            | Self::NmapScan { id, .. }
+            | Self::HttpHeaders { id, .. } => id,
         }
     }
 }
