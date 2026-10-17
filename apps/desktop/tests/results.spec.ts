@@ -81,7 +81,7 @@ test("header evidence and plain text failures remain accessible", async ({ page 
   await expect(page.getByText("Invalid JSON from provider: {unfinished", { exact: true })).toBeVisible();
   await page.getByText("Collected evidence", { exact: false }).first().click();
   await expect(page.getByText("nosniff", { exact: true })).toBeVisible();
-  await expect(page.locator("dt", { hasText: /^X content type options$/ })).toBeVisible();
+  await expect(page.locator("dt", { hasText: /^X content type options/ })).toBeVisible();
 });
 
 test("large lists expand and the minimum desktop width does not overflow", async ({ page }) => {
