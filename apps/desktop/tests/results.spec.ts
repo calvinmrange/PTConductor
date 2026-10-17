@@ -31,7 +31,7 @@ async function setup(page: Page, output: unknown = assessment, options: { raw?: 
 }
 async function openHistory(page: Page) {
   await page.getByRole("button", { name: "Run history", exact: true }).click();
-  await page.getByRole("button", { name: /nmap-scan-summary/ }).click();
+  await page.locator(".history-list").getByRole("button", { name: /nmap-scan-summary/ }).click();
 }
 
 test("history shows cards, preserved raw output and Nmap evidence table", async ({ page }) => {
