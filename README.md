@@ -15,7 +15,7 @@ PTConductor is a local-first penetration-testing workflow application for author
 - Readable JSON results with finding cards, severity badges, labeled evidence/recommendations, and Nmap port tables; raw evidence remains expandable. See [GUI result testing](docs/gui-results-testing.md).
 - Packaged desktop data paths and embedded example workflows; CLI release archive and Linux `.deb` packaging.
 
-## Kali quick start: Codex
+## Kali quick start: Codex (most stable)
 
 Install Rust stable, Node.js 22+, Nmap and Codex as described in [Kali setup](docs/kali-testing.md). Run as your regular Kali user, not with `sudo`:
 
