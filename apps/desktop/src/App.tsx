@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { RunResults, StructuredData } from "./RunResults";
 
 type InputKind = "text" | "textarea" | "url" | "number" | "boolean" | "file" | "secret";
 type JsonValue = string | number | boolean | null;
@@ -21,10 +22,12 @@ type WorkflowDefinition = {
   description?: string;
   inputs: InputDefinition[];
   steps: Array<{
-    type: "ai_prompt";
+    type: "ai_prompt" | "nmap_scan" | "http_headers";
     id: string;
     name: string;
-    prompt: string;
+    prompt?: string;
+    target?: string;
+    ports?: string;
     provider?: string;
     outputFormat?: "text" | "json";
   }>;
@@ -124,8 +127,29 @@ export function App() {
   const [busy, setBusy] = useState(true);
   const [creating, setCreating] = useState(false);
   const [provider, setProvider] = useState<"openai" | "codex" | "ollama" | "mock">("codex");
-  const [model, setModel] = useState("gpt-6-sol");
+  const [model, setModel] = useState("default");
   const [allowRemote, setAllowRemote] = useState(false);
+  const [allowActive, setAllowActive] = useState(false);
+  const [notice, setNotice] = useState("");
+  const [search, setSearch] = useState("");
+  const active = selected?.definition.steps.some((step) => step.type !== "ai_prompt") ?? false;
+
+  async function checkCodex() {
+    setBusy(true); setError(""); setNotice("");
+    try { setNotice(await invoke<string>("check_codex")); }
+    catch (cause) { setError(String(cause)); }
+    finally { setBusy(false); }
+  }
+  async function exportReport(id: string, format: "markdown" | "html") {
+    setBusy(true); setError(""); setNotice("");
+    try { setNotice(`Report saved: ${await invoke<string>("export_report", { runId: id, format })}`); }
+    catch (cause) { setError(String(cause)); }
+    finally { setBusy(false); }
+  }
+  function reportButtons(record: RunRecord) {
+    return <div className="form-actions"><button className="secondary" disabled={busy} onClick={() => exportReport(record.id, "markdown")}>Export Markdown</button><button className="secondary" disabled={busy} onClick={() => exportReport(record.id, "html")}>Export HTML</button></div>;
+  }
+
   const [run, setRun] = useState<RunRecord | null>(null);
   const [view, setView] = useState<"workflow" | "history">("workflow");
   const [history, setHistory] = useState<RunSummary[]>([]);
@@ -165,6 +189,10 @@ export function App() {
     setBusy(true);
     setError("");
     setPrepared(null);
+    setNotice("");
+    setView("workflow");
+    setCreating(false);
+    setAllowActive(false);
     setRun(null);
     setAllowRemote(false);
     try {
@@ -233,6 +261,7 @@ export function App() {
         provider,
         model: provider === "mock" ? "mock" : model,
         allowRemote,
+        allowActive,
       });
       setRun(result);
       setHistoryRun(result);
@@ -252,8 +281,8 @@ export function App() {
           <span>Workflow studio</span>
         </div>
         <nav className="main-nav" aria-label="Main view">
-          <button className={view === "workflow" ? "active" : ""} onClick={() => setView("workflow")}>Workflows</button>
-          <button className={view === "history" ? "active" : ""} onClick={openHistory}>Run history</button>
+          <button className={view === "workflow" ? "active" : ""} disabled={busy} onClick={() => setView("workflow")}>Workflows</button>
+          <button className={view === "history" ? "active" : ""} disabled={busy} onClick={openHistory}>Run history</button>
         </nav>
         <div className="engine-status"><i />{isTauri() ? "Local engine" : "Browser preview"}</div>
       </header>
@@ -261,15 +290,16 @@ export function App() {
       <aside className="library">
         <div className="section-heading">
           <div><span>LIBRARY</span><h1>Workflows</h1></div>
-          <button className="icon-button" onClick={() => setCreating(true)} aria-label="Create workflow">+</button>
+          <button className="icon-button" disabled={busy} onClick={() => {setView("workflow"); setCreating(true);}} aria-label="Create workflow">+</button>
         </div>
         <p className="library-copy">Validated, versioned procedures stored on this device.</p>
+        <label className="field"><span className="field-label">Find a workflow</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search name or description" /></label>
         <div className="workflow-list">
-          {workflows.map((workflow) => (
+          {workflows.filter((item) => `${item.name} ${item.description ?? ""}`.toLowerCase().includes(search.toLowerCase())).map((workflow) => (
             <button
               key={workflow.path}
               className={selected?.path === workflow.path ? "workflow-card active" : "workflow-card"}
-              onClick={() => selectWorkflow(workflow)}
+              disabled={busy} onClick={() => selectWorkflow(workflow)}
             >
               <span className="card-kicker">v{workflow.version} · {workflow.inputCount} inputs</span>
               <strong>{workflow.name}</strong>
@@ -280,7 +310,9 @@ export function App() {
         </div>
       </aside>
 
-      <section className="workspace">
+      <section className="workspace" aria-busy={busy}>
+        {notice && <p className="remote-notice" role="status">{notice}</p>}
+        {busy && <p role="status">Working… please wait. Provider runs can take a few minutes.</p>}
         {view === "history" ? (
           <div className="history-view">
             <div className="workflow-header"><div><span className="eyebrow">LOCAL RUNS</span><h2>Run history</h2><p>JSON artifacts are indexed locally. Open a run to review its result and redacted inputs.</p></div>
@@ -293,7 +325,7 @@ export function App() {
             {!isTauri() && <p className="remote-notice">Open the Tauri desktop app to view locally stored runs.</p>}
             <div className="history-list">
               {history.filter((item) => (!statusFilter || item.status === statusFilter) && (!providerFilter || item.provider === providerFilter)).map((item) => (
-                <button key={item.id} className={historyRun?.id === item.id ? "history-item active" : "history-item"} onClick={() => openRun(item.id)}>
+                <button key={item.id} className={historyRun?.id === item.id ? "history-item active" : "history-item"} disabled={busy} onClick={() => openRun(item.id)}>
                   <span><strong>{item.workflowId}</strong><small>{new Date(item.startedAt).toLocaleString()} · {item.id}</small></span>
                   <span className="history-meta">{item.provider || "Pending"}{item.model ? ` / ${item.model}` : ""}<b>{item.status}</b></span>
                 </button>
@@ -302,8 +334,8 @@ export function App() {
             </div>
             {historyRun && <section className="preview-panel">
               <div className="form-title"><span>RUN</span><div><h3>{historyRun.workflow.id} · {historyRun.status}</h3><p>{historyRun.id} · started {new Date(historyRun.startedAt).toLocaleString()}{historyRun.completedAt ? ` · finished ${new Date(historyRun.completedAt).toLocaleString()}` : ""}</p></div></div>
-              <h4>Redacted inputs</h4><pre>{JSON.stringify(historyRun.inputs, null, 2)}</pre>
-              {historyRun.steps.map((step) => <div key={step.id}><h4>{step.id} · {step.provider}{step.model ? ` / ${step.model}` : ""} · {step.status}</h4><pre>{step.output || step.error || "No output yet"}</pre></div>)}
+              {reportButtons(historyRun)}<details className="run-inputs"><summary>Run inputs · secrets redacted</summary><StructuredData value={historyRun.inputs} /></details>
+              <RunResults key={historyRun.id} steps={historyRun.steps} />
             </section>}
           </div>
         ) : creating ? (
@@ -331,7 +363,7 @@ export function App() {
             </div>
             <form onSubmit={prepare} className="input-form">
               <div className="form-title"><span>01</span><div><h3>Workflow inputs</h3><p>Fields are generated from the workflow definition.</p></div></div>
-              <div className="field-grid">
+              <fieldset disabled={busy} className="field-grid">
                 {selected.definition.inputs.map((input) => (
                   <WorkflowField
                     key={input.name}
@@ -339,13 +371,14 @@ export function App() {
                     value={values[input.name]}
                     onChange={(value) => {
                       setValues((current) => ({ ...current, [input.name]: value }));
+                      setAllowActive(false);
                       setPrepared(null);
                       setRun(null);
                       setAllowRemote(false);
                     }}
                   />
                 ))}
-              </div>
+              </fieldset>
               {error && <div className="error" role="alert">{error}</div>}
               <div className="form-actions">
                 <span>Secrets are redacted from previews and stored run metadata.</span>
@@ -357,26 +390,30 @@ export function App() {
               <div className="form-title"><span>03</span><div><h3>Run with a provider</h3><p>Prompts are transmitted only when you click Run.</p></div></div>
               <div className="field-grid">
                 <label className="field"><span className="field-label">Provider</span>
-                  <select value={provider} onChange={(event) => {
+                  <select disabled={busy} value={provider} onChange={(event) => {
                     const next = event.target.value as typeof provider;
                     setProvider(next);
-                    setModel(next === "openai" ? "gpt-6-luna" : next === "codex" ? "gpt-6-sol" : next === "ollama" ? "llama3.2" : "mock");
+                    setModel(next === "openai" ? "gpt-6-luna" : next === "codex" ? "default" : next === "ollama" ? "llama3.2" : "mock");
                     setAllowRemote(false);
                     setRun(null);
-                  }}><option value="codex">Codex (ChatGPT sign-in)</option><option value="openai">OpenAI-compatible (API key)</option><option value="ollama">Ollama (local)</option><option value="mock">Mock (offline)</option></select>
+                  }}><option value="codex">Codex (ChatGPT sign-in)</option><option value="openai">OpenAI-compatible (API key)</option><option value="ollama">Ollama (local)</option><option value="mock">Mock summary (no AI)</option></select>
                 </label>
-                <label className="field"><span className="field-label">Model</span><input value={model} onChange={(event) => setModel(event.target.value)} disabled={provider === "mock"} /></label>
+                <label className="field"><span className="field-label">Model</span><input value={model} onChange={(event) => setModel(event.target.value)} disabled={busy || provider === "mock"} /></label>
               </div>
+              {provider === "codex" && <button type="button" className="secondary" disabled={busy || !isTauri()} onClick={checkCodex}>Check Codex connection</button>}
+              {provider === "codex" && <p>Use model <code>default</code> to let the installed Codex CLI select its default model.</p>}
+              {active && <label className="consent"><input type="checkbox" disabled={busy} checked={allowActive} onChange={(event) => setAllowActive(event.target.checked)} /> I authorize active Nmap / HTTP collection against this target. Evidence is sent to the selected provider for analysis.</label>}
               {provider === "openai" && <p className="remote-notice">The workflow prompt and inputs will be sent to the configured OpenAI-compatible endpoint. Set <code>OPENAI_API_KEY</code> in the terminal before launching the app. Do not paste it into a workflow field.</p>}
               {provider === "codex" && <p className="remote-notice">Codex uses your local CLI sign-in and sends this workflow to your ChatGPT account. Run <code>codex login</code> with ChatGPT first. It starts in an empty temporary directory with a read-only sandbox; an agent may still read accessible files. Remove sensitive content from evidence.</p>}
               {(provider === "openai" || provider === "codex") && <label className="consent"><input type="checkbox" checked={allowRemote} onChange={(event) => setAllowRemote(event.target.checked)} /> I authorize sending these workflow inputs to the selected remote provider.</label>}
               {error && <div className="error" role="alert">{error}</div>}
-              <div className="form-actions"><span>Responses are saved locally as run JSON artifacts.</span><button type="button" className="primary" onClick={execute} disabled={busy || !isTauri() || ((provider === "openai" || provider === "codex") && !allowRemote)}>{busy ? "Running…" : "Run workflow"}<b>→</b></button></div>
+              <div className="form-actions"><span>Responses are saved locally as run JSON artifacts.</span><button type="button" className="primary" onClick={execute} disabled={busy || !isTauri() || (active && !allowActive) || ((provider === "openai" || provider === "codex") && !allowRemote)}>{busy ? "Running…" : "Run workflow"}<b>→</b></button></div>
               {!isTauri() && <p className="remote-notice">Open the Tauri desktop app to run workflows. Browser preview does not call providers.</p>}
             </section>}
             {run && <section className="preview-panel">
               <div className="form-title"><span>04</span><div><h3>Results</h3><p>Run {run.id} · {run.status}</p></div></div>
-              {run.steps.map((step) => <div key={step.id}><h4>{step.id} · {step.provider}{step.model ? ` / ${step.model}` : ""}</h4><pre>{step.output || step.error}</pre></div>)}
+              {reportButtons(run)}
+              <RunResults key={run.id} steps={run.steps} />
             </section>}
           </>
         ) : (
@@ -525,7 +562,7 @@ function prepareInBrowser(workflow: WorkflowDefinition, supplied: Record<string,
       id: step.id,
       name: step.name,
       provider: step.provider,
-      promptPreview: workflow.inputs.reduce((prompt, input) => prompt.replaceAll(`<${input.name}>`, String(inputs[input.name] ?? "")), step.prompt),
+      promptPreview: workflow.inputs.reduce((prompt, input) => prompt.replaceAll(`<${input.name}>`, String(inputs[input.name] ?? "")), step.prompt ?? step.target ?? ""),
     })),
   };
 }

@@ -64,12 +64,19 @@ impl VariableResolver {
 }
 
 impl ResolvedInputs {
+    pub(crate) fn with_evidence(&self, evidence: String) -> Self {
+        let mut copy = self.clone();
+        copy.values.insert("STEPS".into(), Value::String(evidence));
+        copy
+    }
+
     pub fn render(&self, template: &str) -> Result<String, EngineError> {
         self.render_with_secrets(template, false)
     }
 
     pub fn render_redacted(&self, template: &str) -> Result<String, EngineError> {
         self.render_with_secrets(template, true)
+            .map(|text| self.redact_output(&text))
     }
 
     fn render_with_secrets(
@@ -133,8 +140,10 @@ impl ResolvedInputs {
                 }
             }
             Value::Object(fields) => {
-                for item in fields.values_mut() {
-                    self.redact_json(item);
+                let old = std::mem::take(fields);
+                for (key, mut item) in old {
+                    self.redact_json(&mut item);
+                    fields.insert(self.redact_output(&key), item);
                 }
             }
             _ => {}
@@ -145,11 +154,12 @@ impl ResolvedInputs {
         self.values
             .iter()
             .map(|(name, value)| {
-                let stored = if self.secret_names.contains(name) {
+                let mut stored = if self.secret_names.contains(name) {
                     Value::String("***REDACTED***".to_owned())
                 } else {
                     value.clone()
                 };
+                self.redact_json(&mut stored);
                 (name.clone(), stored)
             })
             .collect()
@@ -176,15 +186,9 @@ pub(crate) fn validate_input_value(
         InputKind::File => value.as_str().is_some_and(|value| {
             string_is_present(value) && (!check_file_exists || Path::new(value).is_file())
         }),
-        InputKind::Url => value.as_str().is_some_and(|value| {
-            let Some((_, remainder)) = value.split_once("://") else {
-                return false;
-            };
-            (value.starts_with("http://") || value.starts_with("https://"))
-                && !remainder.is_empty()
-                && !remainder.starts_with('/')
-                && !remainder.chars().any(char::is_whitespace)
-        }),
+        InputKind::Url => value
+            .as_str()
+            .is_some_and(|v| crate::collectors::validate_url(v).is_ok()),
         InputKind::Number => value.is_number(),
         InputKind::Boolean => value.is_boolean(),
     };

@@ -1,5 +1,7 @@
+pub mod collectors;
 mod error;
 mod ports;
+pub mod process;
 mod resolver;
 
 use std::collections::BTreeMap;
@@ -15,6 +17,11 @@ pub use resolver::{ResolvedInputs, VariableResolver};
 use serde::Serialize;
 use serde_json::Value;
 use uuid::Uuid;
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RunOptions {
+    pub allow_active: bool,
+}
 
 pub struct WorkflowEngine<P, R> {
     provider: P,
@@ -55,21 +62,41 @@ where
         values: BTreeMap<String, Value>,
         content_hash: String,
     ) -> Result<RunRecord, EngineError> {
-        validate_workflow(workflow)?;
+        self.execute_with_options(workflow, values, content_hash, RunOptions::default())
+            .await
+    }
+
+    pub async fn execute_with_options(
+        &self,
+        workflow: &WorkflowDefinition,
+        values: BTreeMap<String, Value>,
+        content_hash: String,
+        options: RunOptions,
+    ) -> Result<RunRecord, EngineError> {
+        prepare_workflow(workflow, values.clone())?;
+        if workflow.steps.iter().any(StepDefinition::is_active) && !options.allow_active {
+            return Err(EngineError::InvalidWorkflow(
+                "active collection requires --allow-active or the desktop authorization checkbox"
+                    .into(),
+            ));
+        }
         let inputs = VariableResolver::resolve(&workflow.inputs, values)?;
         for step in &workflow.steps {
-            let StepDefinition::AiPrompt { provider, .. } = step;
-            if provider
-                .as_ref()
-                .is_some_and(|name| name != self.provider.id())
+            if let StepDefinition::AiPrompt {
+                provider: Some(name),
+                ..
+            } = step
             {
-                return Err(EngineError::InvalidWorkflow(format!(
-                    "step `{}` requires provider `{}`; selected provider is `{}`",
-                    step.id(),
-                    provider.as_deref().unwrap_or_default(),
-                    self.provider.id()
-                )));
+                if name != self.provider.id() {
+                    return Err(EngineError::InvalidWorkflow(format!(
+                        "step `{}` requires provider `{name}`",
+                        step.id()
+                    )));
+                }
             }
+        }
+        if workflow.steps.iter().any(StepDefinition::is_active) {
+            self.provider.check_ready().await?;
         }
         let started_at = Utc::now();
         let mut run = RunRecord {
@@ -91,86 +118,112 @@ where
         self.runs.save(&run).await?;
 
         for step in &workflow.steps {
-            let StepDefinition::AiPrompt {
-                id,
-                name: _,
-                prompt,
-                output_format,
-                ..
-            } = step;
             let step_started = Utc::now();
-            let rendered_prompt = inputs.render(prompt)?;
-            let response = match self
-                .provider
-                .complete(AiRequest {
-                    workflow_id: workflow.id.clone(),
-                    step_id: id.clone(),
-                    prompt: rendered_prompt,
-                    output_format: *output_format,
-                })
-                .await
-            {
-                Ok(response) => response,
-                Err(error) => {
-                    run.steps.push(StepRun {
-                        id: id.clone(),
-                        status: RunStatus::Failed,
-                        started_at: step_started,
-                        completed_at: Some(Utc::now()),
-                        provider: self.provider.id().to_owned(),
-                        model: None,
-                        output: String::new(),
-                        error: Some(error.to_string()),
-                    });
-                    run.status = RunStatus::Failed;
-                    run.completed_at = Some(Utc::now());
-                    self.runs.save(&run).await?;
-                    return Err(error);
-                }
-            };
-
-            let output = if *output_format == OutputFormat::Json {
-                match serde_json::from_str::<Value>(&response.content) {
-                    Ok(mut value) if value.is_object() => {
-                        inputs.redact_json(&mut value);
-                        serde_json::to_string_pretty(&value).map_err(|_| {
-                            EngineError::Provider("cannot serialize JSON response".to_owned())
-                        })?
+            let result: Result<AiResponse, EngineError> = async {
+                match step {
+                    StepDefinition::AiPrompt {
+                        prompt,
+                        output_format,
+                        ..
+                    } => {
+                        let evidence = serde_json::to_string(&run.steps).map_err(|_| {
+                            EngineError::Provider("cannot serialize evidence".into())
+                        })?;
+                        self.provider
+                            .complete(AiRequest {
+                                workflow_id: workflow.id.clone(),
+                                step_id: step.id().into(),
+                                prompt: inputs.with_evidence(evidence).render(prompt)?,
+                                output_format: *output_format,
+                            })
+                            .await
                     }
-                    _ => {
-                        let error = EngineError::Provider(
-                            "provider returned invalid JSON object output".to_owned(),
-                        );
-                        run.steps.push(StepRun {
-                            id: id.clone(),
-                            status: RunStatus::Failed,
-                            started_at: step_started,
-                            completed_at: Some(Utc::now()),
-                            provider: self.provider.id().to_owned(),
+                    StepDefinition::NmapScan { target, ports, .. } => {
+                        let output =
+                            collectors::nmap_scan(&inputs.render(target)?, &inputs.render(ports)?)
+                                .await?;
+                        Ok(AiResponse {
+                            provider: "nmap".into(),
                             model: None,
-                            output: String::new(),
-                            error: Some(error.to_string()),
-                        });
-                        run.status = RunStatus::Failed;
-                        run.completed_at = Some(Utc::now());
-                        self.runs.save(&run).await?;
-                        return Err(error);
+                            content: output.to_string(),
+                        })
+                    }
+                    StepDefinition::HttpHeaders { target, .. } => {
+                        let output = collectors::security_headers(&inputs.render(target)?).await?;
+                        Ok(AiResponse {
+                            provider: "http".into(),
+                            model: None,
+                            content: output.to_string(),
+                        })
                     }
                 }
-            } else {
-                inputs.redact_output(&response.content)
+            }
+            .await;
+            let result = result.and_then(|mut response| {
+                let json_output = !matches!(
+                    step,
+                    StepDefinition::AiPrompt {
+                        output_format: OutputFormat::Text,
+                        ..
+                    }
+                );
+                response.content = if json_output {
+                    let mut value: Value =
+                        serde_json::from_str(&response.content).map_err(|_| {
+                            EngineError::Provider(
+                                "provider returned invalid JSON object output".into(),
+                            )
+                        })?;
+                    if !value.is_object() {
+                        return Err(EngineError::Provider(
+                            "provider returned invalid JSON object output".into(),
+                        ));
+                    }
+                    inputs.redact_json(&mut value);
+                    serde_json::to_string_pretty(&value)
+                        .map_err(|_| EngineError::Provider("cannot serialize JSON output".into()))?
+                } else {
+                    inputs.redact_output(&response.content)
+                };
+                Ok(response)
+            });
+            let (provider, model, output, error) = match result {
+                Ok(response) => (response.provider, response.model, response.content, None),
+                Err(error) => (
+                    match step {
+                        StepDefinition::NmapScan { .. } => "nmap",
+                        StepDefinition::HttpHeaders { .. } => "http",
+                        _ => self.provider.id(),
+                    }
+                    .into(),
+                    None,
+                    String::new(),
+                    Some(inputs.redact_output(&error.to_string())),
+                ),
             };
-
             run.steps.push(StepRun {
-                id: id.clone(),
-                status: RunStatus::Completed,
+                id: step.id().into(),
+                status: if error.is_some() {
+                    RunStatus::Failed
+                } else {
+                    RunStatus::Completed
+                },
                 started_at: step_started,
                 completed_at: Some(Utc::now()),
-                provider: response.provider,
-                model: response.model,
+                provider,
+                model,
                 output,
-                error: None,
+                error: error.clone(),
             });
+            if let Some(error) = error {
+                run.status = RunStatus::Failed;
+                run.completed_at = Some(Utc::now());
+                self.runs.save(&run).await?;
+                return Err(EngineError::Provider(format!(
+                    "{error}; failed run saved as {}",
+                    run.id
+                )));
+            }
             self.runs.save(&run).await?;
         }
 
@@ -210,7 +263,7 @@ pub fn validate_workflow(workflow: &WorkflowDefinition) -> Result<(), EngineErro
 
     let mut input_names = std::collections::BTreeSet::new();
     for input in &workflow.inputs {
-        if !is_variable_name(&input.name) {
+        if !is_variable_name(&input.name) || input.name == "STEPS" {
             return Err(EngineError::InvalidWorkflow(format!(
                 "input name `{}` must use uppercase letters, numbers, and underscores",
                 input.name
@@ -258,33 +311,38 @@ pub fn validate_workflow(workflow: &WorkflowDefinition) -> Result<(), EngineErro
                 step.id()
             )));
         }
-        let StepDefinition::AiPrompt {
-            name,
-            prompt,
-            provider,
-            ..
-        } = step;
-        if provider
-            .as_ref()
-            .is_some_and(|value| value.trim().is_empty())
-        {
-            return Err(EngineError::InvalidWorkflow(format!(
-                "step `{}` has an empty provider",
-                step.id()
-            )));
+        if step.name().trim().is_empty() {
+            return Err(EngineError::InvalidWorkflow(
+                "step name must not be empty".into(),
+            ));
         }
-        if name.trim().is_empty() || prompt.trim().is_empty() {
-            return Err(EngineError::InvalidWorkflow(format!(
-                "step `{}` must have a name and prompt",
-                step.id()
-            )));
-        }
-        for variable in template_variables(prompt) {
-            if !input_names.contains(variable.as_str()) {
-                return Err(EngineError::InvalidWorkflow(format!(
-                    "step `{}` references undeclared input `{variable}`",
-                    step.id()
-                )));
+        let templates = match step {
+            StepDefinition::AiPrompt {
+                prompt, provider, ..
+            } => {
+                if prompt.trim().is_empty()
+                    || provider.as_ref().is_some_and(|v| v.trim().is_empty())
+                {
+                    return Err(EngineError::InvalidWorkflow(
+                        "prompt and provider must not be empty".into(),
+                    ));
+                }
+                vec![prompt.as_str()]
+            }
+            StepDefinition::NmapScan { target, ports, .. } => vec![target.as_str(), ports.as_str()],
+            StepDefinition::HttpHeaders { target, .. } => vec![target.as_str()],
+        };
+        for template in templates {
+            for variable in template_variables(template) {
+                if variable == "STEPS" && matches!(step, StepDefinition::AiPrompt { .. }) {
+                    continue;
+                }
+                if !input_names.contains(variable.as_str()) {
+                    return Err(EngineError::InvalidWorkflow(format!(
+                        "step `{}` references undeclared input `{variable}`",
+                        step.id()
+                    )));
+                }
             }
         }
     }
@@ -296,11 +354,21 @@ pub fn prepare_workflow(
     values: BTreeMap<String, Value>,
 ) -> Result<PreparedWorkflow, EngineError> {
     validate_workflow(workflow)?;
-    let inputs = VariableResolver::resolve(&workflow.inputs, values)?;
+    let inputs = VariableResolver::resolve(&workflow.inputs, values)?
+        .with_evidence("[Collected step evidence will be inserted at runtime]".into());
     let steps = workflow
         .steps
         .iter()
         .map(|step| match step {
+            StepDefinition::NmapScan { id, name, target, ports } => {
+                let target = inputs.render(target)?; let ports = inputs.render(ports)?;
+                collectors::validate_target(&target)?; collectors::validate_ports(&ports)?;
+                Ok(PreparedStep { id: id.clone(), name: name.clone(), provider: Some("nmap".into()), output_format: OutputFormat::Json, prompt_preview: inputs.redact_output(&format!("Nmap TCP connect / light service scan: {target}, ports {ports}; timeout 60s")) })
+            }
+            StepDefinition::HttpHeaders { id, name, target } => {
+                let target = inputs.render(target)?; collectors::validate_url(&target)?;
+                Ok(PreparedStep { id: id.clone(), name: name.clone(), provider: Some("http".into()), output_format: OutputFormat::Json, prompt_preview: inputs.redact_output(&format!("GET {target}; no redirects; response security headers only")) })
+            }
             StepDefinition::AiPrompt {
                 id,
                 name,
@@ -320,7 +388,11 @@ pub fn prepare_workflow(
     Ok(PreparedWorkflow {
         workflow_id: workflow.id.clone(),
         workflow_version: workflow.version.clone(),
-        inputs: inputs.redacted_values(),
+        inputs: inputs
+            .redacted_values()
+            .into_iter()
+            .filter(|(name, _)| name != "STEPS")
+            .collect(),
         steps,
     })
 }
@@ -405,7 +477,9 @@ mod tests {
     fn validates_declared_template_variables() {
         assert!(validate_workflow(&workflow()).is_ok());
         let mut invalid = workflow();
-        let StepDefinition::AiPrompt { prompt, .. } = &mut invalid.steps[0];
+        let StepDefinition::AiPrompt { prompt, .. } = &mut invalid.steps[0] else {
+            unreachable!()
+        };
         *prompt = "Review <MISSING>".to_owned();
         assert!(validate_workflow(&invalid).is_err());
     }
@@ -421,7 +495,9 @@ mod tests {
             description: None,
             default: None,
         });
-        let StepDefinition::AiPrompt { prompt, .. } = &mut definition.steps[0];
+        let StepDefinition::AiPrompt { prompt, .. } = &mut definition.steps[0] else {
+            unreachable!()
+        };
         *prompt = "Review <TARGET> with <TOKEN>".to_owned();
         let prepared = prepare_workflow(
             &definition,

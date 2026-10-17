@@ -958,9 +958,11 @@ dependencies = [
  "async-trait",
  "chrono",
  "ptc-domain",
+ "reqwest",
  "serde",
  "serde_json",
  "thiserror",
+ "tokio",
  "uuid",
 ]
 
@@ -998,6 +1000,7 @@ name = "ptc-reporting"
 version = "0.1.0"
 dependencies = [
  "ptc-domain",
+ "serde_json",
 ]
 
 [[package]]

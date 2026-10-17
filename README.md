@@ -1,133 +1,118 @@
 # PTConductor
 
-PTConductor is a local-first penetration-testing workflow orchestrator. It loads reusable, versioned workflows, collects typed inputs, invokes interchangeable AI providers, and stores structured run artifacts for evidence and reporting.
+PTConductor is a local-first penetration-testing workflow application for authorized targets. A shared Rust engine powers the React/Tauri desktop and CLI: load a versioned workflow, validate inputs, collect evidence, summarize it with an AI provider, save a run, and export a report.
 
-> [!IMPORTANT]
-> PTConductor is intended only for systems you own or have explicit authorization to test.
+## Implemented MVP
 
-## Architecture
+- Versioned JSON workflows; creation, discovery, validation and redacted previews.
+- Typed text, textarea, URL, number, boolean, file-path and secret inputs.
+- Sequential `ai_prompt`, `nmap_scan` and `http_headers` steps; `<STEPS>` passes collected evidence to a later prompt.
+- Codex CLI with ChatGPT authentication, OpenAI-compatible APIs, local Ollama and an offline mock.
+- Bounded Nmap TCP/service scans and HTTP security-header collection, each requiring active-target authorization.
+- JSON run artifacts and SQLite history, including partially completed and failed runs.
+- Standalone Markdown/HTML reports from saved runs, available in both interfaces.
+- Desktop workflow search, history filters, provider readiness check and export controls.
+- Readable JSON results with finding cards, severity badges, labeled evidence/recommendations, and Nmap port tables; raw evidence remains expandable. See [GUI result testing](docs/gui-results-testing.md).
+- Packaged desktop data paths and embedded example workflows; CLI release archive and Linux `.deb` packaging.
 
-The desktop application and CLI are thin adapters over the same Rust workflow engine:
+## Kali quick start: Codex
 
-```text
-React/Tauri GUI ─┐
-                 ├─> Application API -> Workflow engine -> provider/storage/report adapters
-Rust CLI ────────┘
-```
-
-The frontend never owns workflow state, executes tools, or reads secrets directly. See [docs/architecture.md](docs/architecture.md) for the module boundaries and [docs/security.md](docs/security.md) for the security model.
-
-## Repository layout
-
-- `apps/cli` — `ptconductor` command-line interface
-- `apps/desktop` — React frontend and thin Tauri host
-- `crates/ptc-domain` — serialized domain models
-- `crates/ptc-engine` — validation, variable resolution, and orchestration
-- `crates/ptc-providers` — AI provider adapters
-- `crates/ptc-persistence` — workflow and run repositories
-- `crates/ptc-reporting` — deterministic report renderers
-- `schemas` — versioned workflow and run JSON Schemas
-- `workflows/examples` — safe sample workflows
-
-## Workflow commands
+Install Rust stable, Node.js 22+, Nmap and Codex as described in [Kali setup](docs/kali-testing.md). Run as your regular Kali user, not with `sudo`:
 
 ```bash
-cargo run -p ptconductor-cli -- workflow list
-cargo run -p ptconductor-cli -- workflow validate workflows/examples/web-endpoint-review.json
-cargo run -p ptconductor-cli -- prepare workflows/examples/web-endpoint-review.json \
-  --input TARGET=https://example.test \
-  --input 'NOTES=Authorized staging target'
-cargo run -p ptconductor-cli -- run workflows/examples/web-endpoint-review.json \
-  --input TARGET=https://example.test \
-  --provider mock
-```
-
-Create a workflow from the CLI with typed fields:
-
-```bash
-cargo run -p ptconductor-cli -- workflow create \
-  --id tls-review \
-  --name "TLS review" \
-  --field 'TARGET:url:required:Target URL' \
-  --field 'DEPTH:number:optional:Review depth' \
-  --field 'TOKEN:secret:required:Temporary token' \
-  --prompt 'Review <TARGET> to depth <DEPTH> using <TOKEN>'
-```
-
-`prepare` validates inputs and prints a redacted prompt preview without calling a provider. The deterministic mock provider lets the full engine run without credentials.
-
-## Run history
-
-Every run is stored as `runs/<run-id>.json`. The shared persistence adapter indexes run metadata in `runs/index.sqlite`, including status, timestamps, workflow, provider, model, and redacted inputs. Existing JSON artifacts, including Codex runs, are imported when the store opens.
-
-```bash
-cargo run -p ptconductor-cli -- history
-cargo run -p ptconductor-cli -- history --limit 20 --json
-cargo run -p ptconductor-cli -- show <run-id>
-cargo run -p ptconductor-cli -- report <run-id>
-```
-
-In the desktop app, select **Run history** to filter by status or provider, open a run, and inspect its saved output and redacted inputs. Failed runs appear there even when the original `run` command returned an error. The SQLite index can be recreated from JSON artifacts; keep those artifacts when moving runs between machines. The index contains no unredacted secret input values.
-
-## AI provider execution
-
-`technology-fingerprint.json` asks for an interpretation of observations you paste, not an active scan. The CLI and desktop use the same provider adapters.
-
-### Codex with a ChatGPT sign-in (Kali)
-
-Install the Codex CLI and sign in using **ChatGPT** (not an API key). PTConductor checks the login mode and never reads Codex credentials:
-
-```bash
-npm install -g @openai/codex
-codex login
+npm install -g @openai/codex@latest
+codex login --device-auth
 codex login status
-cargo run -p ptconductor-cli -- run workflows/examples/technology-fingerprint.json \
-  --provider codex --model gpt-6-sol --allow-remote \
-  --input TARGET=https://example.test \
-  --input 'HEADERS=Server: nginx' \
-  --output-json runs/codex-technology-result.json
+cargo build --locked -p ptconductor-cli
+./target/debug/ptconductor doctor
 ```
 
-Codex consumes your ChatGPT/Codex allowance, subject to its limits. It runs as an agent in a read-only sandbox from an empty temporary directory; do not give it sensitive evidence or trust prompt text as a tool restriction. Launch the desktop from a terminal with `codex` on `PATH`, choose **Codex (ChatGPT sign-in)**, then confirm remote transmission. See [docs/codex-kali.md](docs/codex-kali.md) for the full test.
+The doctor checks installation, required CLI flags and ChatGPT login without calling a model. Leave the Codex model at `default` to use the CLI's available default; use `--model` only for an explicitly available model. No OpenAI API key is needed for this provider. Model access and usage allowance are checked by Codex during live execution.
 
-### OpenAI API key
-
-Set your API key in the environment of the terminal launching PTConductor—never commit it or paste it into a workflow:
+Scan one authorized host and summarize actual Nmap XML:
 
 ```bash
-read -rsp 'OpenAI API key: ' OPENAI_API_KEY; export OPENAI_API_KEY; echo
-cargo run -p ptconductor-cli -- run workflows/examples/technology-fingerprint.json \
-  --provider openai --model gpt-6-luna --allow-remote \
-  --input TARGET=https://example.test \
-  --input 'HEADERS=Server: nginx' \
-  --output-json runs/technology-result.json
+./target/debug/ptconductor run workflows/examples/nmap-scan-summary.json \
+  --provider codex --allow-remote --allow-active \
+  --input TARGET=127.0.0.1 --input PORTS=22,80,443 \
+  --output-json nmap-summary.json
 ```
 
-This sends the supplied workflow inputs to the OpenAI API and may incur API charges. The API key is not included in run artifacts or command arguments. The CLI writes a new `runs/technology-result.json` file; it will not overwrite an existing file. Run artifacts also contain the validated JSON output. For the desktop, launch `npm run tauri dev` from that same terminal, select **Technology Fingerprint Analysis**, enter evidence, prepare, confirm remote transmission, and run. Model selection defaults to `gpt-6-luna`. A ChatGPT subscription does not itself supply API credits; API billing is separate.
+In another terminal start a local demonstration target with `python3 -m http.server 8000 --bind 127.0.0.1`, then assess its headers:
 
-Ollama uses `--provider ollama --model <installed-model>` and defaults to `http://127.0.0.1:11434`. OpenAI-compatible services can use `--base-url https://your-service.example/v1`; the desktop uses `PTCONDUCTOR_OPENAI_BASE_URL` or `PTCONDUCTOR_OLLAMA_BASE_URL` if configured. `--provider mock` stays available for offline checks. Provider errors omit response bodies so credentials and submitted observations are not echoed to the UI.
+```bash
+./target/debug/ptconductor run workflows/examples/security-headers-summary.json \
+  --provider codex --allow-remote --allow-active \
+  --input TARGET=http://127.0.0.1:8000 \
+  --output-json headers-summary.json
+```
 
-The complete OpenAI/Kali smoke test is in [docs/week5-testing.md](docs/week5-testing.md).
+`--allow-active` authorizes collection against the supplied target. `--allow-remote` confirms sending evidence to Codex/OpenAI. Nmap runs a TCP connect scan with light service detection, at most 1,024 ports and a 60-second host timeout. Header collection makes one GET, verifies TLS and does not follow redirects. Neither workflow delegates collection commands to the model. Results are AI assessments for operator review, not proof of vulnerabilities.
 
-## Development
+Full troubleshooting and desktop steps: [Codex on Kali](docs/codex-kali.md).
+
+## Workflows and history
+
+```bash
+./target/debug/ptconductor workflow list
+./target/debug/ptconductor workflow validate workflows/examples/nmap-scan-summary.json
+./target/debug/ptconductor prepare workflows/examples/nmap-scan-summary.json
+./target/debug/ptconductor history --json
+./target/debug/ptconductor show RUN_ID
+./target/debug/ptconductor report RUN_ID --format markdown --output report.md
+./target/debug/ptconductor report RUN_ID --format html --output report.html
+```
+
+Replace `RUN_ID` with a saved UUID. Export commands create new files and refuse overwrites. `prepare` performs no scan or model call. The original `technology-fingerprint.json` analyzes pasted headers/HTML rather than fetching a target. The mock provider tests plumbing; it does not produce a meaningful assessment.
+
+Create a prompt workflow from the CLI or the desktop's **New workflow** form:
+
+```bash
+./target/debug/ptconductor workflow create \
+  --id endpoint-review --name 'Endpoint review' \
+  --field 'TARGET:url:required:Target URL' \
+  --field 'NOTES:textarea:optional:Observations' \
+  --prompt 'Review supplied observations for <TARGET>: <NOTES>'
+```
+
+Collector workflows can be edited as JSON using [the workflow schema](schemas/workflow-v1alpha1.schema.json). File inputs validate a local file path; they do not automatically upload or embed its contents.
+
+CLI paths default to `workflows/examples` and `runs` relative to the current directory. Override with `--workflows-dir`, `--runs-dir`, `PTCONDUCTOR_WORKFLOWS_DIR` or `PTCONDUCTOR_RUNS_DIR`. Desktop paths default to `$XDG_DATA_HOME/dev.ptconductor.desktop` (normally `~/.local/share/dev.ptconductor.desktop`), with `workflows`, `runs` and `reports` subdirectories. Set `PTCONDUCTOR_DATA_DIR` to change the desktop root. Set both directory variables to absolute paths to share CLI and desktop history. JSON artifacts are authoritative; see [recovery](docs/kali-testing.md#history-recovery).
+
+## Other providers
+
+- Ollama: `--provider ollama --model YOUR_INSTALLED_MODEL`; loopback only, default `http://127.0.0.1:11434`.
+- OpenAI-compatible API: `--provider openai --model YOUR_AVAILABLE_MODEL --allow-remote`; read `OPENAI_API_KEY` in the launching shell. API billing is separate from ChatGPT/Codex usage.
+- Mock: `--provider mock`; no credentials or model call. Active workflows still collect evidence and need `--allow-active`.
+
+The CLI accepts `--base-url` for HTTP providers. Desktop endpoint overrides are `PTCONDUCTOR_OPENAI_BASE_URL` and `PTCONDUCTOR_OLLAMA_BASE_URL`. Codex uses its own authenticated CLI route and does not accept a base URL. Never commit credentials, real evidence or run outputs.
+
+## Development and packaging
 
 ```bash
 cargo fmt --all --check
-cargo check --workspace
 cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo build -p ptconductor-cli
+python3 tests/integration.py
+# Optional: real Nmap, only against the test's loopback HTTP server
+PTC_TEST_REAL_NMAP=1 python3 tests/integration.py
+bash scripts/build-release.sh
 
 cd apps/desktop
-npm install
+npm ci
 npm run build
 npm run tauri dev
+# Build an installable Linux package on Kali with native dependencies installed
+npm run tauri build -- --bundles deb
 ```
 
-For a fresh Kali Linux VM, follow [docs/kali-testing.md](docs/kali-testing.md).
+GitHub Actions checks Rust/frontend/native desktop builds, runs real loopback Nmap plus simulated Codex contracts, and uploads CLI/desktop packages. Live Codex account access and interactive Kali desktop acceptance remain manual release gates; [the final checklist](docs/final-testing.md) covers them and the demonstration.
 
-## MVP boundary
+## Project layout
 
-The initial engine permits only `ai_prompt` workflow steps. Command execution, HTTP testing, scope enforcement, and evidence capture will be introduced behind explicit interfaces after the AI-only vertical slice is stable.
+`apps/cli` and `apps/desktop` compose the shared crates: `ptc-domain`, `ptc-engine`, `ptc-providers`, `ptc-persistence`, `ptc-reporting`. See [architecture](docs/architecture.md) and [security boundaries](docs/security.md).
 
-## License
+The MVP supports sequential, bounded collectors and summaries. General shell steps, NSE scripts, multi-target scopes, exploit execution, branching, encrypted storage and automated verification of AI findings are outside this release.
 
-PTConductor is licensed under the [GNU General Public License v3.0](LICENSE).
+Licensed under [GNU GPL v3.0](LICENSE).

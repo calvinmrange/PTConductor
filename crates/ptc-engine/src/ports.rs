@@ -23,6 +23,9 @@ pub struct AiResponse {
 pub trait AiProvider: Send + Sync {
     fn id(&self) -> &str;
     fn is_remote(&self) -> bool;
+    async fn check_ready(&self) -> Result<(), EngineError> {
+        Ok(())
+    }
     async fn complete(&self, request: AiRequest) -> Result<AiResponse, EngineError>;
 }
 

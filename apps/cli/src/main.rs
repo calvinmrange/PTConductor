@@ -5,10 +5,10 @@ use ptc_domain::{
     InputDefinition, InputKind, OutputFormat, StepDefinition, WorkflowDefinition,
     WORKFLOW_SCHEMA_VERSION,
 };
-use ptc_engine::{prepare_workflow, RunRepository, WorkflowEngine};
+use ptc_engine::{prepare_workflow, RunOptions, RunRepository, WorkflowEngine};
 use ptc_persistence::{load_workflow_file, FileWorkflowRepository, IndexedRunRepository};
-use ptc_providers::ConfiguredProvider;
-use ptc_reporting::{MarkdownRenderer, ReportRenderer};
+use ptc_providers::{CodexProvider, ConfiguredProvider};
+use ptc_reporting::render_report;
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -19,9 +19,9 @@ use uuid::Uuid;
     about = "Local-first pentest workflow orchestration"
 )]
 struct Cli {
-    #[arg(long, default_value = "workflows/examples", global = true)]
+    #[arg(long, default_value_os_t = default_directory("PTCONDUCTOR_WORKFLOWS_DIR", "workflows/examples"), global = true)]
     workflows_dir: PathBuf,
-    #[arg(long, default_value = "runs", global = true)]
+    #[arg(long, default_value_os_t = default_directory("PTCONDUCTOR_RUNS_DIR", "runs"), global = true)]
     runs_dir: PathBuf,
     #[command(subcommand)]
     command: Command,
@@ -29,6 +29,8 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Check Codex installation, required flags, and ChatGPT login without calling a model.
+    Doctor,
     Workflow {
         #[command(subcommand)]
         command: WorkflowCommand,
@@ -48,6 +50,11 @@ enum Command {
             help = "Acknowledge transmission of workflow inputs to a remote provider"
         )]
         allow_remote: bool,
+        #[arg(
+            long,
+            help = "Authorize this workflow's Nmap / HTTP collection against the supplied target"
+        )]
+        allow_active: bool,
         #[arg(long, help = "Write the final JSON step output to a new file")]
         output_json: Option<PathBuf>,
     },
@@ -69,6 +76,8 @@ enum Command {
         run_id: Uuid,
         #[arg(long, default_value = "markdown")]
         format: String,
+        #[arg(long, help = "Save the report to a new file (otherwise print it)")]
+        output: Option<PathBuf>,
     },
 }
 
@@ -138,6 +147,10 @@ impl From<CliInputKind> for InputKind {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     match cli.command {
+        Command::Doctor => {
+            CodexProvider::new("default")?.check_ready().await?;
+            println!("Codex CLI ready: required flags supported; ChatGPT authentication detected. Live inference still depends on model access and usage allowance.");
+        }
         Command::Workflow { command } => match command {
             WorkflowCommand::List => {
                 let repository = FileWorkflowRepository::new(cli.workflows_dir);
@@ -196,16 +209,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             model,
             base_url,
             allow_remote,
+            allow_active,
             output_json,
         } => {
+            if output_json.as_ref().is_some_and(|path| path.exists()) {
+                return Err("output file already exists; choose a new --output-json path".into());
+            }
             if matches!(provider.as_str(), "openai" | "codex") && !allow_remote {
                 return Err(format!("provider `{provider}` sends workflow inputs to OpenAI; pass --allow-remote to confirm").into());
             }
             let loaded = load_workflow_file(workflow)?;
-            let values = parse_inputs(inputs)?;
+            let values = parse_workflow_inputs(inputs, &loaded.definition.inputs)?;
             let model = model.unwrap_or_else(|| match provider.as_str() {
                 "openai" => "gpt-6-luna".to_owned(),
-                "codex" => "gpt-6-sol".to_owned(),
+                "codex" => "default".to_owned(),
                 "ollama" => "llama3.2".to_owned(),
                 _ => "mock".to_owned(),
             });
@@ -213,7 +230,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let repository = IndexedRunRepository::open(cli.runs_dir).await?;
             let engine = WorkflowEngine::new(provider, repository);
             let run = engine
-                .execute(&loaded.definition, values, loaded.content_hash)
+                .execute_with_options(
+                    &loaded.definition,
+                    values,
+                    loaded.content_hash,
+                    RunOptions { allow_active },
+                )
                 .await?;
             if let Some(path) = output_json {
                 let final_step = run.steps.last().ok_or("run had no steps")?;
@@ -231,7 +253,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Command::Prepare { workflow, inputs } => {
             let loaded = load_workflow_file(workflow)?;
-            let prepared = prepare_workflow(&loaded.definition, parse_inputs(inputs)?)?;
+            let prepared = prepare_workflow(
+                &loaded.definition,
+                parse_workflow_inputs(inputs, &loaded.definition.inputs)?,
+            )?;
             println!("{}", serde_json::to_string_pretty(&prepared)?);
         }
         Command::Show { run_id } => {
@@ -263,33 +288,70 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        Command::Report { run_id, format } => {
-            if format != "markdown" {
-                return Err(format!("report format `{format}` is not implemented yet").into());
-            }
+        Command::Report {
+            run_id,
+            format,
+            output,
+        } => {
             let repository = IndexedRunRepository::open(cli.runs_dir).await?;
             let run = repository
                 .get(run_id)
                 .await?
                 .ok_or_else(|| format!("run not found: {run_id}"))?;
-            println!("{}", MarkdownRenderer.render(&run));
+            let report = render_report(&run, &format)?;
+            if let Some(path) = output {
+                let mut file = OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&path)?;
+                file.write_all(report.as_bytes())?;
+                eprintln!("saved report: {}", path.display());
+            } else {
+                println!("{report}");
+            }
         }
     }
     Ok(())
 }
 
+fn default_directory(variable: &str, fallback: &str) -> PathBuf {
+    std::env::var_os(variable)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(fallback))
+}
+
 fn parse_inputs(values: Vec<String>) -> Result<BTreeMap<String, Value>, String> {
-    values
-        .into_iter()
-        .map(|entry| {
-            let (name, value) = entry
-                .split_once('=')
-                .ok_or_else(|| format!("invalid input `{entry}`; expected NAME=VALUE"))?;
-            let value =
-                serde_json::from_str(value).unwrap_or_else(|_| Value::String(value.to_owned()));
-            Ok((name.to_owned(), value))
-        })
-        .collect()
+    let mut inputs = BTreeMap::new();
+    for entry in values {
+        let (name, value) = entry
+            .split_once('=')
+            .ok_or_else(|| "invalid input; expected NAME=VALUE".to_owned())?;
+        if inputs.contains_key(name) {
+            return Err("duplicate input name".into());
+        }
+        let value = serde_json::from_str(value).unwrap_or_else(|_| Value::String(value.to_owned()));
+        inputs.insert(name.to_owned(), value);
+    }
+    Ok(inputs)
+}
+
+fn parse_workflow_inputs(
+    values: Vec<String>,
+    definitions: &[InputDefinition],
+) -> Result<BTreeMap<String, Value>, String> {
+    // Text fields must preserve literal input (including numeric-looking ports and secrets).
+    let mut parsed = parse_inputs(values.clone())?;
+    for entry in values {
+        let (name, raw) = entry.split_once('=').expect("parse_inputs checked syntax");
+        if definitions.iter().any(|definition| {
+            definition.name == name
+                && !matches!(definition.kind, InputKind::Number | InputKind::Boolean)
+        }) {
+            let value = serde_json::from_str::<String>(raw).unwrap_or_else(|_| raw.to_owned());
+            parsed.insert(name.to_owned(), Value::String(value));
+        }
+    }
+    Ok(parsed)
 }
 
 fn parse_field(value: &str) -> Result<InputDefinition, String> {

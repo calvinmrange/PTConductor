@@ -1,14 +1,11 @@
 use async_trait::async_trait;
 use ptc_domain::OutputFormat;
+use ptc_engine::process::run_bounded;
 use ptc_engine::{AiProvider, AiRequest, AiResponse, EngineError};
 use reqwest::{Client, Url};
 use serde_json::{json, Value};
-use std::{fs, path::PathBuf, process::Stdio, time::Duration};
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    process::Command,
-    time::timeout,
-};
+use std::{fs, path::PathBuf, time::Duration};
+use tokio::process::Command;
 use uuid::Uuid;
 
 const OPENAI_BASE_URL: &str = "https://api.openai.com/v1/";
@@ -39,6 +36,12 @@ impl ConfiguredProvider {
 
 #[async_trait]
 impl AiProvider for ConfiguredProvider {
+    async fn check_ready(&self) -> Result<(), EngineError> {
+        if let Self::Codex(provider) = self {
+            provider.check_ready().await?;
+        }
+        Ok(())
+    }
     fn id(&self) -> &str {
         match self {
             Self::Mock(provider) => provider.id(),
@@ -231,42 +234,60 @@ impl CodexProvider {
     pub fn new(model: &str) -> Result<Self, EngineError> {
         Ok(Self {
             model: validated_model(model)?,
-            executable: PathBuf::from("codex"),
+            executable: std::env::var_os("PTCONDUCTOR_CODEX_BIN")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("codex")),
         })
     }
 
+    fn command(&self) -> Command {
+        let mut command = Command::new(&self.executable);
+        command
+            .env_remove("OPENAI_API_KEY")
+            .env_remove("CODEX_API_KEY");
+        command
+    }
+
+    pub async fn check_ready(&self) -> Result<(), EngineError> {
+        let mut command = self.command();
+        command.args(["exec", "--help"]);
+        let output = run_bounded(command, b"", Duration::from_secs(15), 64 * 1024).await
+            .map_err(|_| EngineError::Provider("Codex CLI not found or unresponsive; install @openai/codex, or set PTCONDUCTOR_CODEX_BIN to its absolute path".into()))?;
+        let help = String::from_utf8_lossy(&output.stdout);
+        if !output.status.success()
+            || [
+                "--output-last-message",
+                "--ephemeral",
+                "--ignore-user-config",
+            ]
+            .iter()
+            .any(|flag| !help.contains(flag))
+        {
+            return Err(EngineError::Provider(
+                "Codex CLI is too old for this adapter; run npm install -g @openai/codex@latest"
+                    .into(),
+            ));
+        }
+        self.check_chatgpt_login().await
+    }
+
     async fn check_chatgpt_login(&self) -> Result<(), EngineError> {
-        let status = timeout(
-            Duration::from_secs(15),
-            Command::new(&self.executable)
-                .args(["login", "status"])
-                .env_remove("OPENAI_API_KEY")
-                .env_remove("CODEX_API_KEY")
-                .kill_on_drop(true)
-                .output(),
-        )
-        .await
-        .map_err(|_| EngineError::Provider("Codex login check timed out".to_owned()))?
-        .map_err(|_| {
-            EngineError::Provider(
-                "Codex CLI not found; install it and run `codex login`".to_owned(),
-            )
-        })?;
+        let mut command = self.command();
+        command.args(["login", "status"]);
+        let status = run_bounded(command, b"", Duration::from_secs(15), 64 * 1024).await?;
         let details = format!(
             "{} {}",
             String::from_utf8_lossy(&status.stdout),
             String::from_utf8_lossy(&status.stderr)
-        );
-        let details = details.to_ascii_lowercase();
+        )
+        .to_ascii_lowercase();
         if !status.status.success()
             || !details.contains("chatgpt")
-            || details.contains("api key")
-            || details.contains("api-key")
-            || details.contains("apikey")
+            || ["api key", "api-key", "apikey"]
+                .iter()
+                .any(|v| details.contains(v))
         {
-            return Err(EngineError::Provider(
-                "Codex must be signed in with ChatGPT, not an API key; run `codex login status` and `codex login`".to_owned(),
-            ));
+            return Err(EngineError::Provider("Codex must be signed in with ChatGPT; run codex login --device-auth and codex login status in the same Kali account that launches PTConductor".into()));
         }
         Ok(())
     }
@@ -294,85 +315,103 @@ impl AiProvider for CodexProvider {
                 "Codex prompt exceeds 256 KiB".to_owned(),
             ));
         }
-        self.check_chatgpt_login().await?;
+        self.check_ready().await?;
         let working_dir = CodexWorkingDirectory::new()?;
-        let content = timeout(
-            Duration::from_secs(240),
-            self.invoke(&working_dir.0, &prompt),
-        )
-        .await
-        .map_err(|_| EngineError::Provider("Codex run timed out".to_owned()))??;
+        let content = self.invoke(&working_dir.0, &prompt).await?;
         Ok(AiResponse {
             provider: self.id().to_owned(),
-            model: Some(self.model.clone()),
+            model: if self.model == "default" {
+                None
+            } else {
+                Some(self.model.clone())
+            },
             content,
         })
     }
 }
 
 impl CodexProvider {
-    async fn invoke(&self, working_dir: &PathBuf, prompt: &str) -> Result<String, EngineError> {
-        let mut child = Command::new(&self.executable)
-            .args(["--ask-for-approval", "never", "exec"])
+    async fn invoke(
+        &self,
+        working_dir: &std::path::Path,
+        prompt: &str,
+    ) -> Result<String, EngineError> {
+        let answer = working_dir.join("answer.txt");
+        let mut command = self.command();
+        command
             .args([
+                "--ask-for-approval",
+                "never",
+                "exec",
                 "--sandbox",
                 "read-only",
                 "--ephemeral",
                 "--ignore-user-config",
                 "--skip-git-repo-check",
-                "--model",
-                &self.model,
-                "-",
+                "--color",
+                "never",
+                "--output-last-message",
             ])
-            .current_dir(working_dir)
-            .env_remove("OPENAI_API_KEY")
-            .env_remove("CODEX_API_KEY")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|_| EngineError::Provider("could not launch Codex CLI".to_owned()))?;
-        let mut stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| EngineError::Provider("could not open Codex prompt input".to_owned()))?;
-        stdin
-            .write_all(prompt.as_bytes())
-            .await
-            .map_err(|_| EngineError::Provider("could not send prompt to Codex CLI".to_owned()))?;
-        drop(stdin);
-        let mut output = Vec::new();
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| EngineError::Provider("could not read Codex output".to_owned()))?;
-        stdout
-            .take(1024 * 1024 + 1)
-            .read_to_end(&mut output)
-            .await
-            .map_err(|_| EngineError::Provider("could not read Codex output".to_owned()))?;
-        if output.len() > 1024 * 1024 {
+            .arg(&answer)
+            .current_dir(working_dir);
+        if self.model != "default" {
+            command.args(["--model", &self.model]);
+        }
+        command.arg("-");
+        let output = run_bounded(
+            command,
+            prompt.as_bytes(),
+            Duration::from_secs(240),
+            1024 * 1024,
+        )
+        .await?;
+        if !output.status.success() {
+            return Err(codex_failure(&String::from_utf8_lossy(&output.stderr)));
+        }
+        // Only consume the final-message file, never progress, banners, or tool output on stdout.
+        let metadata = fs::symlink_metadata(&answer).map_err(|_| {
+            EngineError::Provider(
+                "Codex produced no final response; check model access and run codex login status"
+                    .into(),
+            )
+        })?;
+        if !metadata.is_file() || metadata.len() > 1024 * 1024 {
             return Err(EngineError::Provider(
-                "Codex output exceeds 1 MiB".to_owned(),
+                "Codex final response is not a regular file or exceeds 1 MiB".into(),
             ));
         }
-        let status = child
-            .wait()
-            .await
-            .map_err(|_| EngineError::Provider("Codex CLI process failed".to_owned()))?;
-        if !status.success() {
-            return Err(EngineError::Provider(
-                "Codex run failed; check your ChatGPT login and Codex usage limits".to_owned(),
-            ));
-        }
-        let content = String::from_utf8(output)
-            .map_err(|_| EngineError::Provider("Codex output was not UTF-8".to_owned()))?;
+        let content = fs::read_to_string(answer)
+            .map_err(|_| EngineError::Provider("could not read Codex final response".into()))?;
         if content.trim().is_empty() {
-            return Err(EngineError::Provider("Codex returned no output".to_owned()));
+            return Err(EngineError::Provider(
+                "Codex returned an empty final response".into(),
+            ));
         }
         Ok(content)
     }
+}
+
+fn codex_failure(stderr: &str) -> EngineError {
+    let message = stderr.to_ascii_lowercase();
+    let advice = if ["429", "usage limit", "quota", "rate limit"]
+        .iter()
+        .any(|v| message.contains(v))
+    {
+        "Codex usage limit reached; wait for your ChatGPT/Codex allowance to reset or use Ollama. Adding API credits does not change this route"
+    } else if message.contains("model")
+        && ["not found", "not supported", "does not exist"]
+            .iter()
+            .any(|v| message.contains(v))
+    {
+        "Codex model is unavailable; choose model 'default' or a model available in your Codex CLI"
+    } else if message.contains("sandbox") || message.contains("bwrap") {
+        "Codex sandbox could not start; update Codex and check Kali user namespaces / bubblewrap support. PTConductor does not bypass the sandbox"
+    } else if message.contains("unexpected argument") {
+        "Codex rejected an option; update @openai/codex to the latest stable CLI"
+    } else {
+        "Codex run failed; check codex login status, network access, model availability, and ChatGPT/Codex usage limits"
+    };
+    EngineError::Provider(advice.into())
 }
 
 struct CodexWorkingDirectory(PathBuf);
@@ -627,9 +666,8 @@ mod tests {
         let fixture = CodexWorkingDirectory::new().unwrap();
         let executable = fixture.0.join("codex");
         let script = format!(
-            "#!/bin/sh\nif [ \"$1\" = login ]; then\n  printf '%s\\n' '{login_message}'\n  exit 0\nfi\nprintf '%s\\n' \"$@\" > \"{args}\"\ncat > \"{prompt}\"\nprintf '%s\\n' '{{\"technologies\":[]}}'\n",
-            args = fixture.0.join("args").display(),
-            prompt = fixture.0.join("prompt").display(),
+            "#!/bin/sh\nif [ \"$1\" = login ]; then\n  printf '%s\\n' '{login_message}' >&2\n  exit 0\nfi\nif [ \"$2\" = --help ]; then\n echo '--output-last-message --ephemeral --ignore-user-config'; exit 0; fi\nprintf '%s\\n' \"$@\" > \"{args}\"\nwhile [ \"$#\" -gt 0 ]; do if [ \"$1\" = --output-last-message ]; then shift; answer=$1; fi; shift; done\ncat > \"{prompt}\"\nprintf '%s\\n' '{{\"technologies\":[]}}' > \"$answer\"\necho 'progress which must not become the response'\n",
+            args = fixture.0.join("args").display(), prompt = fixture.0.join("prompt").display(),
         );
         fs::write(&executable, script).unwrap();
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
