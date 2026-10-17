@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { RunResults, StructuredData } from "./RunResults";
 
 type InputKind = "text" | "textarea" | "url" | "number" | "boolean" | "file" | "secret";
 type JsonValue = string | number | boolean | null;
@@ -333,8 +334,8 @@ export function App() {
             </div>
             {historyRun && <section className="preview-panel">
               <div className="form-title"><span>RUN</span><div><h3>{historyRun.workflow.id} · {historyRun.status}</h3><p>{historyRun.id} · started {new Date(historyRun.startedAt).toLocaleString()}{historyRun.completedAt ? ` · finished ${new Date(historyRun.completedAt).toLocaleString()}` : ""}</p></div></div>
-              {reportButtons(historyRun)}<h4>Redacted inputs</h4><pre>{JSON.stringify(historyRun.inputs, null, 2)}</pre>
-              {historyRun.steps.map((step) => <div key={step.id}><h4>{step.id} · {step.provider}{step.model ? ` / ${step.model}` : ""} · {step.status}</h4><pre>{step.output || step.error || "No output yet"}</pre></div>)}
+              {reportButtons(historyRun)}<details className="run-inputs"><summary>Run inputs · secrets redacted</summary><StructuredData value={historyRun.inputs} /></details>
+              <RunResults key={historyRun.id} steps={historyRun.steps} />
             </section>}
           </div>
         ) : creating ? (
@@ -412,7 +413,7 @@ export function App() {
             {run && <section className="preview-panel">
               <div className="form-title"><span>04</span><div><h3>Results</h3><p>Run {run.id} · {run.status}</p></div></div>
               {reportButtons(run)}
-              {run.steps.map((step) => <div key={step.id}><h4>{step.id} · {step.provider}{step.model ? ` / ${step.model}` : ""}</h4><pre>{step.output || step.error}</pre></div>)}
+              <RunResults key={run.id} steps={run.steps} />
             </section>}
           </>
         ) : (

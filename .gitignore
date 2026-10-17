@@ -13,3 +13,5 @@ dist/
 /runs/
 /evidence/
 .DS_Store
+/apps/desktop/test-results/
+/apps/desktop/playwright-report/

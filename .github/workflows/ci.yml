@@ -61,7 +61,15 @@ jobs:
         working-directory: apps/desktop
         run: |
           npm ci
+          npx playwright install --with-deps chromium
+          npm run test:ui
           npm run tauri build -- --bundles deb -- --locked
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: desktop-ui-test-results
+          path: apps/desktop/test-results/
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@v4
         with:
           name: ptconductor-linux-desktop

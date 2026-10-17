@@ -12,6 +12,7 @@ PTConductor is a local-first penetration-testing workflow application for author
 - JSON run artifacts and SQLite history, including partially completed and failed runs.
 - Standalone Markdown/HTML reports from saved runs, available in both interfaces.
 - Desktop workflow search, history filters, provider readiness check and export controls.
+- Readable JSON results with finding cards, severity badges, labeled evidence/recommendations, and Nmap port tables; raw evidence remains expandable. See [GUI result testing](docs/gui-results-testing.md).
 - Packaged desktop data paths and embedded example workflows; CLI release archive and Linux `.deb` packaging.
 
 ## Kali quick start: Codex
